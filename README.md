@@ -36,11 +36,8 @@ Multi-agent pipelines break in two ways: agents run out of order, or they produc
 ## Install
 
 ```bash
-# Test locally
-claude --plugin-dir ./agent-gate
-
-# Or from a marketplace
-claude plugin install agent-gate@marketplace-name
+claude plugin marketplace add kam-l/agent-gate
+claude plugin install agent-gate
 ```
 
 ## Quick Start
