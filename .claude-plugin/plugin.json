@@ -1,0 +1,5 @@
+{
+  "name": "agent-gate",
+  "description": "Declarative pipeline gates for Claude Code. Define dependencies and quality checks in YAML — enforce them automatically.",
+  "author": { "name": "kam-l" }
+}

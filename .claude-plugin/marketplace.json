@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "agent-gate",
+  "description": "Declarative pipeline gates for Claude Code. Define dependencies and quality checks in YAML — enforce them automatically.",
+  "owner": {
+    "name": "kam-l"
+  },
+  "plugins": [
+    {
+      "name": "agent-gate",
+      "description": "Declarative pipeline gates for Claude Code. Define dependencies and quality checks in YAML — enforce them automatically.",
+      "source": ".",
+      "category": "development"
+    }
+  ]
+}
