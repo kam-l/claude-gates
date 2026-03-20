@@ -46,8 +46,8 @@ Multi-agent pipelines break in two ways: agents run out of order, or they produc
 ## Install
 
 ```bash
-claude plugin marketplace add kam-l/agent-gate
-claude plugin install agent-gate
+claude plugin marketplace add kam-l/claude-gates
+claude plugin install claude-gates
 ```
 
 Optional: run `npm install` in the plugin directory to enable SQLite session state (atomic operations, no race conditions between concurrent hooks). Without it, JSON file-based state is used automatically.
