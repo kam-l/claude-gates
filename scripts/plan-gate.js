@@ -69,7 +69,7 @@ try {
   let planFiles;
   try {
     planFiles = fs.readdirSync(plansDir)
-      .filter(f => f.endsWith(".md"))
+      .filter(f => f.endsWith(".md") && !/-agent-/.test(f))
       .map(f => ({ name: f, mtime: fs.statSync(path.join(plansDir, f)).mtimeMs }))
       .sort((a, b) => b.mtime - a.mtime);
   } catch {

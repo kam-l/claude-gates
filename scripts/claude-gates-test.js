@@ -1207,6 +1207,47 @@ assert(failResult.stdout.includes("block"), "gater FAIL verdict still blocks");
 fs.rmSync(planVerdictHome, { recursive: true, force: true });
 fs.rmSync(tmpPlanHome, { recursive: true, force: true });
 
+// Test: agent subplan files (-agent-) are ignored in plan discovery
+const agentPlanHome = fs.mkdtempSync(path.join(os.tmpdir(), "cgates-plan-agent-"));
+const agentPlanDir = path.join(agentPlanHome, ".claude", "plans");
+fs.mkdirSync(agentPlanDir, { recursive: true });
+
+// Only file is an agent subplan — should be ignored, so plan-gate allows (no plans found)
+const agentSubplan = Array.from({ length: 30 }, (_, i) => `Agent line ${i + 1}`).join("\n");
+fs.writeFileSync(path.join(agentPlanDir, "my-plan-agent-abc123.md"), agentSubplan, "utf-8");
+
+const agentPlanResult = runPlanGate(
+  { session_id: "plan-agent-only" },
+  { USERPROFILE: agentPlanHome, HOME: agentPlanHome }
+);
+assert(agentPlanResult.exitCode === 0 && !agentPlanResult.stdout.includes("block"),
+  "plan-gate ignores agent subplan files (-agent-)");
+
+// Mix: agent subplan (big) + real plan (trivial) — should use real plan, allow
+fs.writeFileSync(path.join(agentPlanDir, "real-plan.md"), "Simple\nDone\n", "utf-8");
+const mixResult = runPlanGate(
+  { session_id: "plan-agent-mix" },
+  { USERPROFILE: agentPlanHome, HOME: agentPlanHome }
+);
+assert(mixResult.exitCode === 0 && !mixResult.stdout.includes("block"),
+  "plan-gate uses real plan (trivial) when agent subplan also present");
+
+// Mix: agent subplan (big) + real plan (big) — should block on real plan
+fs.writeFileSync(path.join(agentPlanDir, "real-plan.md"), bigPlan, "utf-8");
+const mixBlockResult = runPlanGate(
+  { session_id: "plan-agent-mix-block" },
+  { USERPROFILE: agentPlanHome, HOME: agentPlanHome }
+);
+if (mixBlockResult.stdout.trim()) {
+  const mixOutput = JSON.parse(mixBlockResult.stdout);
+  assert(mixOutput.decision === "block" && mixOutput.reason.includes("real-plan.md"),
+    "plan-gate blocks on real non-trivial plan, not agent subplan");
+} else {
+  assert(false, "plan-gate blocks on real non-trivial plan, not agent subplan (no output)");
+}
+
+fs.rmSync(agentPlanHome, { recursive: true, force: true });
+
 // ── config module ────────────────────────────────────────────────────
 
 describe("config module");
