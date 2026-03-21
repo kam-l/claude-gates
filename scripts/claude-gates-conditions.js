@@ -143,6 +143,7 @@ try {
     // ── Gate enforcement (SQLite only) ──
     const activeGate = gatesDb.getActiveGate(db, scope);
     const reviseGate = gatesDb.getReviseGate(db, scope);
+    const fixGate = gatesDb.getFixGate(db, scope);
 
     if (activeGate && agentType !== activeGate.gate_agent) {
       process.stdout.write(JSON.stringify({
@@ -153,7 +154,16 @@ try {
       process.exit(0);
     }
 
-    if (reviseGate && agentType !== reviseGate.source_agent) {
+    if (fixGate && agentType !== fixGate.fixer_agent) {
+      process.stdout.write(JSON.stringify({
+        decision: "block",
+        reason: `[ClaudeGates] Scope "${scope}" gate "${fixGate.gate_agent}" returned REVISE. Spawn fixer "${fixGate.fixer_agent}" with scope=${scope} to fix, then re-run the gate.`
+      }));
+      db.close();
+      process.exit(0);
+    }
+
+    if (reviseGate && agentType !== reviseGate.source_agent && agentType !== (reviseGate.fixer_agent || "")) {
       process.stdout.write(JSON.stringify({
         decision: "block",
         reason: `[ClaudeGates] Scope "${scope}" gate "${reviseGate.gate_agent}" returned REVISE. Resume source agent "${reviseGate.source_agent}" with scope=${scope} to fix, then re-run the gate.`

@@ -27,10 +27,13 @@
  *   initGates(db, scope, sourceAgent, gates)       → void
  *   getActiveGate(db, scope)                       → row | null
  *   getReviseGate(db, scope)                       → row | null
+ *   getFixGate(db, scope)                          → row | null
  *   getGates(db, scope)                            → row[]
  *   passGate(db, scope, order)                     → { nextGate, allPassed }
  *   reviseGate(db, scope, order)                   → { status, round } | null
+ *   fixGate(db, scope, order)                      → { status, round } | null
  *   reactivateReviseGate(db, scope)                → boolean
+ *   reactivateFixGate(db, scope)                   → boolean
  *   hasActiveGates(db, scope)                      → boolean
  */
 
@@ -59,6 +62,7 @@ CREATE TABLE IF NOT EXISTS gates (
   status       TEXT NOT NULL DEFAULT 'pending',
   round        INTEGER NOT NULL DEFAULT 0,
   source_agent TEXT NOT NULL,
+  fixer_agent  TEXT,
   PRIMARY KEY (scope, "order")
 );
 
@@ -106,6 +110,13 @@ function getDb(sessionDir) {
     db.prepare("SELECT lines FROM edits LIMIT 0").get();
   } catch {
     try { db.exec("ALTER TABLE edits ADD COLUMN lines INTEGER NOT NULL DEFAULT 0"); } catch {}
+  }
+
+  // Upgrade gates table (add fixer_agent column if missing)
+  try {
+    db.prepare("SELECT fixer_agent FROM gates LIMIT 0").get();
+  } catch {
+    try { db.exec("ALTER TABLE gates ADD COLUMN fixer_agent TEXT"); } catch {}
   }
 
   // Migrate old SQLite schema → new (if old tables exist)
@@ -451,8 +462,8 @@ function initGates(db, scope, sourceAgent, gates) {
     for (let i = 0; i < gates.length; i++) {
       const status = i === 0 ? "active" : "pending";
       db.prepare(
-        'INSERT INTO gates (scope, "order", gate_agent, max_rounds, status, round, source_agent) VALUES (?, ?, ?, ?, ?, 0, ?)'
-      ).run(scope, i, gates[i].agent, gates[i].maxRounds, status, sourceAgent);
+        'INSERT INTO gates (scope, "order", gate_agent, max_rounds, status, round, source_agent, fixer_agent) VALUES (?, ?, ?, ?, ?, 0, ?, ?)'
+      ).run(scope, i, gates[i].agent, gates[i].maxRounds, status, sourceAgent, gates[i].fixer || null);
     }
   });
   init();
@@ -463,7 +474,7 @@ function initGates(db, scope, sourceAgent, gates) {
  */
 function getActiveGate(db, scope) {
   return db.prepare(
-    'SELECT "order", gate_agent, max_rounds, status, round, source_agent FROM gates WHERE scope = ? AND status = \'active\' LIMIT 1'
+    'SELECT "order", gate_agent, max_rounds, status, round, source_agent, fixer_agent FROM gates WHERE scope = ? AND status = \'active\' LIMIT 1'
   ).get(scope) || null;
 }
 
@@ -472,7 +483,7 @@ function getActiveGate(db, scope) {
  */
 function getReviseGate(db, scope) {
   return db.prepare(
-    'SELECT "order", gate_agent, max_rounds, status, round, source_agent FROM gates WHERE scope = ? AND status = \'revise\' LIMIT 1'
+    'SELECT "order", gate_agent, max_rounds, status, round, source_agent, fixer_agent FROM gates WHERE scope = ? AND status = \'revise\' LIMIT 1'
   ).get(scope) || null;
 }
 
@@ -481,7 +492,7 @@ function getReviseGate(db, scope) {
  */
 function getGates(db, scope) {
   return db.prepare(
-    'SELECT "order", gate_agent, max_rounds, status, round, source_agent FROM gates WHERE scope = ? ORDER BY "order"'
+    'SELECT "order", gate_agent, max_rounds, status, round, source_agent, fixer_agent FROM gates WHERE scope = ? ORDER BY "order"'
   ).all(scope);
 }
 
@@ -544,7 +555,7 @@ function reviseGate(db, scope, order) {
  */
 function reactivateReviseGate(db, scope) {
   const gate = db.prepare(
-    'SELECT "order" FROM gates WHERE scope = ? AND status = \'revise\' LIMIT 1'
+    'SELECT "order" FROM gates WHERE scope = ? AND status = \'revise\' ORDER BY "order" LIMIT 1'
   ).get(scope);
   if (!gate) return false;
   db.prepare('UPDATE gates SET status = \'active\' WHERE scope = ? AND "order" = ?').run(scope, gate.order);
@@ -552,11 +563,60 @@ function reactivateReviseGate(db, scope) {
 }
 
 /**
- * Check if scope has any non-terminal gates (pending, active, revise).
+ * Get a gate in 'fix' status for a scope (fixer is working).
+ */
+function getFixGate(db, scope) {
+  return db.prepare(
+    'SELECT "order", gate_agent, max_rounds, status, round, source_agent, fixer_agent FROM gates WHERE scope = ? AND status = \'fix\' LIMIT 1'
+  ).get(scope) || null;
+}
+
+/**
+ * Set a gate to 'fix' status (fixer handles revision) and increment round.
+ * If round >= maxRounds, set to 'failed' instead.
+ * Called INSTEAD of reviseGate() when fixer is defined.
+ */
+function fixGate(db, scope, order) {
+  let result = null;
+  const fix = db.transaction(() => {
+    const gate = db.prepare(
+      'SELECT round, max_rounds FROM gates WHERE scope = ? AND "order" = ?'
+    ).get(scope, order);
+    if (!gate) return;
+    const newRound = gate.round + 1;
+    if (newRound >= gate.max_rounds) {
+      db.prepare('UPDATE gates SET status = \'failed\', round = ? WHERE scope = ? AND "order" = ?')
+        .run(newRound, scope, order);
+      result = { status: "failed", round: newRound };
+    } else {
+      db.prepare('UPDATE gates SET status = \'fix\', round = ? WHERE scope = ? AND "order" = ?')
+        .run(newRound, scope, order);
+      result = { status: "fix", round: newRound };
+    }
+  });
+  fix();
+  return result;
+}
+
+/**
+ * Reactivate a gate from 'fix' status (after fixer agent completes).
+ * Returns true if a gate was reactivated.
+ */
+function reactivateFixGate(db, scope) {
+  const gate = db.prepare(
+    'SELECT "order" FROM gates WHERE scope = ? AND status = \'fix\' ORDER BY "order" LIMIT 1'
+  ).get(scope);
+  if (!gate) return false;
+  db.prepare('UPDATE gates SET status = \'active\' WHERE scope = ? AND "order" = ?').run(scope, gate.order);
+  return true;
+}
+
+/**
+ * Check if scope has any non-terminal gates (pending, active, revise, fix).
  */
 function hasActiveGates(db, scope) {
   const row = db.prepare(
-    "SELECT 1 FROM gates WHERE scope = ? AND status IN ('pending','active','revise') LIMIT 1"
+    "SELECT 1 FROM gates WHERE scope = ? AND status IN ('pending','active','revise','fix') LIMIT 1"
   ).get(scope);
   return !!row;
 }
@@ -582,9 +642,12 @@ module.exports = {
   initGates,
   getActiveGate,
   getReviseGate,
+  getFixGate,
   getGates,
   passGate,
   reviseGate,
+  fixGate,
   reactivateReviseGate,
+  reactivateFixGate,
   hasActiveGates
 };

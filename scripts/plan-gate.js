@@ -8,7 +8,7 @@
  *   - gater agent has a PASS or CONVERGED verdict in session_scopes, OR
  *   - most recent .md in ~/.claude/plans/ is <=20 lines (trivial plan), OR
  *   - plans dir is absent (fail-open), OR
- *   - plan_gate_attempts >= MAX_ATTEMPTS (auto-allow after 3 blocks)
+ *   - plan_gate_attempts >= MAX_ATTEMPTS (safety valve)
  *
  * Verdict-based: reads gater verdicts from the cleared table (SQLite) or
  * session_scopes.json (JSON fallback). No separate stamp mechanism needed.
@@ -112,7 +112,7 @@ try {
   process.stdout.write(JSON.stringify({
     decision: "block",
     reason: `[ClaudeGates] Plan "${planFiles[0].name}" has ${lines} lines and hasn't been verified.` +
-      ` Run /verify ${planPath.replace(/\\/g, "/")} before exiting plan mode. (auto-allows after ${MAX_ATTEMPTS} attempts)`
+      ` Run /verify ${planPath.replace(/\\/g, "/")} before exiting plan mode.`
   }));
   process.exit(0);
 } catch {

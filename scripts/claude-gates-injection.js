@@ -13,7 +13,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { getDb, getPending, getActiveGate } = require("./claude-gates-db.js");
+const { getDb, getPending, getActiveGate, getFixGate } = require("./claude-gates-db.js");
 
 try {
   const data = JSON.parse(fs.readFileSync(0, "utf-8"));
@@ -36,7 +36,7 @@ try {
       const pending = getPending(db, agentType);
       if (pending && pending.outputFilepath) {
         outputFilepath = pending.outputFilepath;
-        // Check if this is a gate agent
+        // Check if this is a gate agent or fixer agent
         if (pending.scope) {
           const activeGate = getActiveGate(db, pending.scope);
           if (activeGate && activeGate.gate_agent === agentType) {
@@ -48,6 +48,18 @@ try {
               `source_agent=${activeGate.source_agent}\n` +
               `source_artifact=${sourceArtifact}\n` +
               `gate_round=${activeGate.round}/${activeGate.max_rounds}\n`;
+          }
+          const fixGateRow = getFixGate(db, pending.scope);
+          if (fixGateRow && fixGateRow.fixer_agent === agentType) {
+            const sourceArtifact = path.join(
+              sessionDir, pending.scope, `${fixGateRow.source_agent}.md`
+            ).replace(/\\/g, "/");
+            gateContext =
+              `role=fixer\n` +
+              `source_agent=${fixGateRow.source_agent}\n` +
+              `source_artifact=${sourceArtifact}\n` +
+              `gate_agent=${fixGateRow.gate_agent}\n` +
+              `gate_round=${fixGateRow.round}/${fixGateRow.max_rounds}\n`;
           }
         }
       }

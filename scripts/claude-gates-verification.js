@@ -62,8 +62,35 @@ try {
   const verification = parseVerification(mdContent);
   const agentGates = parseGates(mdContent);
 
-  // No verification prompt AND no gates → no gate
-  if (!verification && !agentGates) process.exit(0);
+  // No verification prompt AND no gates → check if agent is a fixer/source for active gates
+  if (!verification && !agentGates) {
+    const db0 = gatesDb.getDb(sessionDir);
+    if (db0) {
+      try {
+        // Check if this agent is a fixer completing for a gate in 'fix' status
+        const fixRow = db0.prepare(
+          "SELECT scope FROM gates WHERE fixer_agent = ? AND status = 'fix' LIMIT 1"
+        ).get(bareAgentType);
+        if (fixRow) {
+          const finalVerdict = extractVerdict(lastMessage);
+          processGateTransitions(db0, fixRow.scope, bareAgentType, finalVerdict, mdContent);
+          process.exit(0);
+        }
+        // Check if this agent is a source completing for a gate in 'revise' status
+        const revRow = db0.prepare(
+          "SELECT scope FROM gates WHERE source_agent = ? AND status = 'revise' LIMIT 1"
+        ).get(bareAgentType);
+        if (revRow) {
+          const finalVerdict = extractVerdict(lastMessage);
+          processGateTransitions(db0, revRow.scope, bareAgentType, finalVerdict, mdContent);
+          process.exit(0);
+        }
+      } finally {
+        try { db0.close(); } catch {}
+      }
+    }
+    process.exit(0);
+  }
 
 
   // Open DB (null if better-sqlite3 unavailable → JSON fallback)
@@ -430,17 +457,37 @@ function processGateTransitions(db, scope, agentType, finalVerdict, mdContent) {
           process.stderr.write(`[ClaudeGates] Gate ${activeGate.gate_agent} passed. Next gate: ${nextGate.gate_agent} (spawn with scope=${scope}).\n`);
         }
       } else if (finalVerdict === "REVISE") {
-        const result = gatesDb.reviseGate(db, scope, activeGate.order);
-        if (result && result.status === "failed") {
-          process.stderr.write(`[ClaudeGates] Gate ${activeGate.gate_agent} exhausted max rounds (${activeGate.max_rounds}). Scope "${scope}" gate chain FAILED.\n`);
-        } else if (result) {
-          process.stderr.write(`[ClaudeGates] Gate ${activeGate.gate_agent} returned REVISE (round ${result.round}/${activeGate.max_rounds}). Resume source agent "${activeGate.source_agent}" with scope=${scope}.\n`);
+        if (activeGate.fixer_agent) {
+          // Fixer defined — route to fixer instead of source
+          const result = gatesDb.fixGate(db, scope, activeGate.order);
+          if (result && result.status === "failed") {
+            process.stderr.write(`[ClaudeGates] Gate ${activeGate.gate_agent} exhausted max rounds (${activeGate.max_rounds}). Scope "${scope}" gate chain FAILED.\n`);
+          } else if (result) {
+            process.stderr.write(`[ClaudeGates] Gate ${activeGate.gate_agent} returned REVISE (round ${result.round}/${activeGate.max_rounds}). Spawn fixer "${activeGate.fixer_agent}" with scope=${scope}.\n`);
+          }
+        } else {
+          const result = gatesDb.reviseGate(db, scope, activeGate.order);
+          if (result && result.status === "failed") {
+            process.stderr.write(`[ClaudeGates] Gate ${activeGate.gate_agent} exhausted max rounds (${activeGate.max_rounds}). Scope "${scope}" gate chain FAILED.\n`);
+          } else if (result) {
+            process.stderr.write(`[ClaudeGates] Gate ${activeGate.gate_agent} returned REVISE (round ${result.round}/${activeGate.max_rounds}). Resume source agent "${activeGate.source_agent}" with scope=${scope}.\n`);
+          }
         }
       }
       return; // gate agent handled, don't check source path
     }
 
-    // Case 2: This agent is the SOURCE agent for gates in revise status
+    // Case 2a: This agent is the FIXER agent for a gate in fix status
+    const fixGateRow = gates.find(g => g.fixer_agent === agentType && g.status === "fix");
+    if (fixGateRow) {
+      const reactivated = gatesDb.reactivateFixGate(db, scope);
+      if (reactivated) {
+        process.stderr.write(`[ClaudeGates] Fixer agent "${agentType}" completed. Gate reactivated for re-run.\n`);
+      }
+      return;
+    }
+
+    // Case 2b: This agent is the SOURCE agent for gates in revise status
     const sourceAgent = gates[0].source_agent;
     if (sourceAgent === agentType) {
       const reactivated = gatesDb.reactivateReviseGate(db, scope);
@@ -464,6 +511,14 @@ function processGateTransitions(db, scope, agentType, finalVerdict, mdContent) {
 /**
  * Output a block decision.
  */
+/**
+ * Extract verdict from a message string using VERDICT_RE.
+ */
+function extractVerdict(message) {
+  const match = VERDICT_RE.exec(message);
+  return match ? match[1].toUpperCase() : "UNKNOWN";
+}
+
 function block(reason) {
   process.stdout.write(JSON.stringify({ decision: "block", reason: `[ClaudeGates] ${reason}` }));
 }

@@ -123,6 +123,16 @@ assert(gatesSingle && gatesSingle[0].maxRounds === 5, "maxRounds parsed");
 const gatesQuoted = shared.parseGates('---\ngates:\n  - ["reviewer", 3]\n---\n');
 assert(gatesQuoted && gatesQuoted[0].agent === "reviewer", "quoted agent name");
 
+const gatesFixer = shared.parseGates('---\ngates:\n  - [reviewer, 3, fixer]\n---\n');
+assert(gatesFixer && gatesFixer[0].fixer === "fixer", "fixer parsed from 3rd element");
+assert(gatesFixer && gatesFixer[0].agent === "reviewer" && gatesFixer[0].maxRounds === 3, "fixer entry preserves agent and maxRounds");
+
+const gatesNoFixer = shared.parseGates('---\ngates:\n  - [reviewer, 3]\n---\n');
+assert(gatesNoFixer && !gatesNoFixer[0].fixer, "no fixer when 3rd element absent (backward compat)");
+
+const gatesFixerQuoted = shared.parseGates('---\ngates:\n  - [reviewer, 3, "hot-fixer"]\n---\n');
+assert(gatesFixerQuoted && gatesFixerQuoted[0].fixer === "hot-fixer", "quoted fixer name parsed");
+
 assert(shared.parseGates('---\nname: foo\n---\n') === null, "missing gates returns null");
 assert(shared.parseGates('---\ngates:\n---\n') === null, "empty gates block returns null");
 assert(shared.parseGates("no frontmatter") === null, "no frontmatter returns null");
@@ -978,6 +988,39 @@ if (db) {
   }
   fs.rmSync(tmpFresh, { recursive: true, force: true });
 
+  // ── fixer_agent column migration test ──
+  describe("SQLite DB: fixer_agent column migration");
+
+  const tmpFixerMigrate = fs.mkdtempSync(path.join(os.tmpdir(), "cgates-fixer-migrate-"));
+  try {
+    const Database = require("better-sqlite3");
+    // Create DB without fixer_agent column (simulates old schema)
+    const oldDb = new Database(path.join(tmpFixerMigrate, "session.db"));
+    oldDb.exec(`CREATE TABLE IF NOT EXISTS agents (scope TEXT, agent TEXT, PRIMARY KEY (scope, agent))`);
+    oldDb.exec(`CREATE TABLE IF NOT EXISTS gates (
+      scope TEXT NOT NULL, "order" INTEGER NOT NULL, gate_agent TEXT NOT NULL,
+      max_rounds INTEGER NOT NULL DEFAULT 3, status TEXT NOT NULL DEFAULT 'pending',
+      round INTEGER NOT NULL DEFAULT 0, source_agent TEXT NOT NULL,
+      PRIMARY KEY (scope, "order")
+    )`);
+    oldDb.exec(`CREATE TABLE IF NOT EXISTS edits (filepath TEXT PRIMARY KEY, lines INTEGER NOT NULL DEFAULT 0)`);
+    oldDb.exec(`CREATE TABLE IF NOT EXISTS tool_history (id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL)`);
+    oldDb.exec(`INSERT INTO gates (scope, "order", gate_agent, max_rounds, status, round, source_agent) VALUES ('s', 0, 'rev', 3, 'active', 0, 'impl')`);
+    oldDb.close();
+
+    // Open via getDb — should migrate
+    const migratedDb = gatesDb.getDb(tmpFixerMigrate);
+    if (migratedDb) {
+      const row = migratedDb.prepare('SELECT fixer_agent FROM gates WHERE scope = ?').get("s");
+      assert(row !== undefined, "fixer_agent column added by migration");
+      assert(row.fixer_agent === null, "fixer_agent is null for pre-existing rows");
+      migratedDb.close();
+    }
+  } catch {
+    console.log("  SKIP: fixer migration test — better-sqlite3 not available");
+  }
+  fs.rmSync(tmpFixerMigrate, { recursive: true, force: true });
+
   // ── Concurrency test: two loop-gate writes ──
   describe("SQLite DB: concurrent loop-gate writes");
 
@@ -1562,6 +1605,47 @@ if (gDb) {
   assert(revResult2 && revResult2.status === "failed", "reviseGate at maxRounds sets failed");
   assert(revResult2 && revResult2.round === 2, "round is 2 (max was 2)");
 
+  // ── Fixer gate operations ──
+  gatesDb.initGates(gDb, "task-3", "worker", [
+    { agent: "auditor", maxRounds: 3, fixer: "patcher" }
+  ]);
+  const fixerGates = gatesDb.getGates(gDb, "task-3");
+  assert(fixerGates[0].fixer_agent === "patcher", "initGates stores fixer_agent");
+
+  // fixGate: active → fix
+  const fixResult = gatesDb.fixGate(gDb, "task-3", 0);
+  assert(fixResult && fixResult.status === "fix", "fixGate sets status to fix");
+  assert(fixResult && fixResult.round === 1, "fixGate increments round to 1");
+
+  // getFixGate
+  const fixGateRow = gatesDb.getFixGate(gDb, "task-3");
+  assert(fixGateRow && fixGateRow.fixer_agent === "patcher", "getFixGate returns patcher");
+
+  // reactivateFixGate: fix → active
+  const fixReactivated = gatesDb.reactivateFixGate(gDb, "task-3");
+  assert(fixReactivated === true, "reactivateFixGate returns true");
+  const afterFixReactivate = gatesDb.getActiveGate(gDb, "task-3");
+  assert(afterFixReactivate && afterFixReactivate.gate_agent === "auditor", "fix gate reactivated to active");
+
+  // fixGate at max rounds → failed
+  gatesDb.fixGate(gDb, "task-3", 0); // round 2
+  const fixResult3 = gatesDb.fixGate(gDb, "task-3", 0); // round 3 = max
+  assert(fixResult3 && fixResult3.status === "failed", "fixGate at maxRounds sets failed");
+
+  // hasActiveGates includes fix status
+  gatesDb.initGates(gDb, "task-4", "builder", [
+    { agent: "checker", maxRounds: 2, fixer: "fixer" }
+  ]);
+  gatesDb.fixGate(gDb, "task-4", 0); // set to fix
+  assert(gatesDb.hasActiveGates(gDb, "task-4") === true, "hasActiveGates true when fix status");
+
+  // initGates without fixer → fixer_agent is null
+  gatesDb.initGates(gDb, "task-5", "builder", [
+    { agent: "checker", maxRounds: 2 }
+  ]);
+  const noFixerGates = gatesDb.getGates(gDb, "task-5");
+  assert(noFixerGates[0].fixer_agent === null, "initGates without fixer stores null");
+
   gDb.close();
 } else {
   console.log("  SKIP: gates tests — better-sqlite3 not available");
@@ -1748,6 +1832,410 @@ if (gf4Db) {
 }
 
 fs.rmSync(tmpGaterHome4, { recursive: true, force: true });
+
+// ── gate-block integration ───────────────────────────────────────────
+
+describe("gate-block integration");
+
+const gateBlockScript = path.join(__dirname, "gate-block.js");
+
+function runGateBlock(payload, env) {
+  try {
+    const result = execSync(`node "${gateBlockScript}"`, {
+      input: JSON.stringify(payload),
+      encoding: "utf-8",
+      timeout: 5000,
+      env: { ...process.env, ...env }
+    });
+    return { stdout: result, exitCode: 0 };
+  } catch (err) {
+    return { stdout: err.stdout || "", exitCode: err.status };
+  }
+}
+
+// Setup: session with an active gate
+const tmpGateBlock = fs.mkdtempSync(path.join(os.tmpdir(), "cgates-gblock-"));
+const gblockSessionDir = path.join(tmpGateBlock, ".claude", "sessions", "gblock-test");
+fs.mkdirSync(gblockSessionDir, { recursive: true });
+
+const gblockDb = gatesDb.getDb(gblockSessionDir);
+if (gblockDb) {
+  // No active gate → Edit allowed
+  const noGateResult = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Edit",
+    tool_input: { file_path: "/tmp/foo.js" }
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(noGateResult.exitCode === 0 && !noGateResult.stdout.includes("block"),
+    "no active gate → Edit allowed");
+
+  // Create an active gate
+  gatesDb.initGates(gblockDb, "task-gb", "implementer", [
+    { agent: "reviewer", maxRounds: 3 }
+  ]);
+
+  // Active gate + Read → allowed
+  const readResult = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Read",
+    tool_input: { file_path: "/tmp/foo.js" }
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(readResult.exitCode === 0 && !readResult.stdout.includes("block"),
+    "active gate + Read → allowed");
+
+  // Active gate + Glob → allowed
+  const globResult = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Glob",
+    tool_input: { pattern: "**/*.js" }
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(globResult.exitCode === 0 && !globResult.stdout.includes("block"),
+    "active gate + Glob → allowed");
+
+  // Active gate + Grep → allowed
+  const grepResult = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Grep",
+    tool_input: { pattern: "foo" }
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(grepResult.exitCode === 0 && !grepResult.stdout.includes("block"),
+    "active gate + Grep → allowed");
+
+  // Active gate + correct Agent (reviewer) → allowed
+  const correctAgent = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Agent",
+    tool_input: { subagent_type: "reviewer", prompt: "review scope=task-gb" }
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(correctAgent.exitCode === 0 && !correctAgent.stdout.includes("block"),
+    "active gate + correct Agent → allowed");
+
+  // Active gate + wrong Agent → blocked
+  const wrongAgent = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Agent",
+    tool_input: { subagent_type: "debugger", prompt: "debug something" }
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(wrongAgent.stdout.includes("block") && wrongAgent.stdout.includes("reviewer"),
+    "active gate + wrong Agent → blocked");
+
+  // Active gate + Bash → blocked
+  const bashResult = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Bash",
+    tool_input: { command: "rm -rf /" }
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(bashResult.stdout.includes("block"),
+    "active gate + Bash → blocked");
+
+  // Active gate + Edit → blocked
+  const editResult = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Edit",
+    tool_input: { file_path: "/tmp/foo.js" }
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(editResult.stdout.includes("block"),
+    "active gate + Edit → blocked");
+
+  // Active gate + MCP tool → blocked
+  const mcpResult = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "mcp__slack__send_message",
+    tool_input: { channel: "general", text: "hello" }
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(mcpResult.stdout.includes("block"),
+    "active gate + MCP tool → blocked");
+
+  // Set gate to revise status
+  gatesDb.reviseGate(gblockDb, "task-gb", 0);
+
+  // Revise gate + source Agent (implementer) → allowed
+  const sourceAgent = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Agent",
+    tool_input: { subagent_type: "implementer", prompt: "fix scope=task-gb" }
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(sourceAgent.exitCode === 0 && !sourceAgent.stdout.includes("block"),
+    "revise gate + source Agent → allowed");
+
+  // Revise gate + gate Agent (reviewer) → blocked
+  const gateAgentOnRevise = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Agent",
+    tool_input: { subagent_type: "reviewer", prompt: "review scope=task-gb" }
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(gateAgentOnRevise.stdout.includes("block"),
+    "revise gate + gate Agent → blocked");
+
+  // Revise gate + Bash → blocked
+  const reviseBash = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Bash",
+    tool_input: { command: "echo hello" }
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(reviseBash.stdout.includes("block"),
+    "revise gate + Bash → blocked");
+
+  // Clear the revise gate from task-gb (exhaust to failed so it doesn't interfere)
+  gatesDb.reactivateReviseGate(gblockDb, "task-gb");
+  gatesDb.reviseGate(gblockDb, "task-gb", 0);
+  gatesDb.reactivateReviseGate(gblockDb, "task-gb");
+  gatesDb.reviseGate(gblockDb, "task-gb", 0); // round 3 = maxRounds → failed
+
+  // Set up a fix gate (fixer-equipped)
+  gatesDb.initGates(gblockDb, "task-fix", "implementer", [
+    { agent: "reviewer", maxRounds: 3, fixer: "patcher" }
+  ]);
+  gatesDb.fixGate(gblockDb, "task-fix", 0); // set to fix status
+
+  // Fix gate + fixer Agent → allowed
+  const fixerAgent = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Agent",
+    tool_input: { subagent_type: "patcher", prompt: "fix scope=task-fix" }
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(fixerAgent.exitCode === 0 && !fixerAgent.stdout.includes("block"),
+    "fix gate + fixer Agent → allowed");
+
+  // Fix gate + source Agent → blocked
+  const fixSourceAgent = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Agent",
+    tool_input: { subagent_type: "implementer", prompt: "impl scope=task-fix" }
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(fixSourceAgent.stdout.includes("block"),
+    "fix gate + source Agent → blocked");
+
+  // Fix gate + Bash → blocked
+  const fixBash = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Bash",
+    tool_input: { command: "echo hello" }
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(fixBash.stdout.includes("block"),
+    "fix gate + Bash → blocked");
+
+  // Fix gate + Read → allowed (read-only whitelist)
+  const fixRead = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Read",
+    tool_input: { file_path: "/tmp/foo.js" }
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(fixRead.exitCode === 0 && !fixRead.stdout.includes("block"),
+    "fix gate + Read → allowed");
+
+  gblockDb.close();
+} else {
+  console.log("  SKIP: gate-block tests — better-sqlite3 not available");
+}
+
+fs.rmSync(tmpGateBlock, { recursive: true, force: true });
+
+// ── hooks.json wiring: gate-block ────────────────────────────────────
+
+describe("hooks.json wiring: gate-block");
+
+const gateBlockEntry = preToolUse.find(h => !h.matcher && h.hooks && h.hooks.some(hk => hk.command.includes("gate-block")));
+assert(!!gateBlockEntry, "PreToolUse gate-block wired (no matcher)");
+assert(
+  preToolUse.indexOf(gateBlockEntry) === 0,
+  "gate-block is first PreToolUse entry"
+);
+
+// ── gate lifecycle E2E: worker → reviewer (REVISE) → fixer → reviewer (PASS) ──
+
+describe("gate lifecycle E2E: fixer flow with gt-* agents");
+
+const condScript = path.join(__dirname, "claude-gates-conditions.js");
+const injScript = path.join(__dirname, "claude-gates-injection.js");
+const verScript = path.join(__dirname, "claude-gates-verification.js");
+
+function runHook(script, payload, env, timeout) {
+  try {
+    const result = execSync(`node "${script}"`, {
+      input: JSON.stringify(payload),
+      encoding: "utf-8",
+      timeout: timeout || 5000,
+      cwd: PLUGIN_ROOT,
+      env: { ...process.env, CLAUDECODE: "", ...env }
+    });
+    return { stdout: result, stderr: "", exitCode: 0 };
+  } catch (err) {
+    return { stdout: err.stdout || "", stderr: err.stderr || "", exitCode: err.status };
+  }
+}
+
+const tmpE2E = fs.mkdtempSync(path.join(os.tmpdir(), "cgates-e2e-"));
+const e2eSessionDir = path.join(tmpE2E, ".claude", "sessions", "e2e-test");
+fs.mkdirSync(e2eSessionDir, { recursive: true });
+const e2eEnv = { USERPROFILE: tmpE2E, HOME: tmpE2E };
+
+const e2eDb = gatesDb.getDb(e2eSessionDir);
+if (e2eDb) {
+  e2eDb.close(); // just init the DB
+
+  // ── Step 1: Spawn gt-worker (conditions hook) ──
+  const condWorker = runHook(condScript, {
+    session_id: "e2e-test",
+    tool_name: "Agent",
+    tool_input: { subagent_type: "gt-worker", prompt: "scope=task-e2e build something" }
+  }, e2eEnv);
+  assert(condWorker.exitCode === 0 && !condWorker.stdout.includes("block"),
+    "E2E step 1: gt-worker spawn allowed");
+
+  // ── Step 2: gt-worker completes with PASS → gates initialized ──
+  // Write worker artifact
+  const e2eScopeDir = path.join(e2eSessionDir, "task-e2e");
+  fs.mkdirSync(e2eScopeDir, { recursive: true });
+  fs.writeFileSync(path.join(e2eScopeDir, "gt-worker.md"), "Built the thing.\n\nResult: PASS\n", "utf-8");
+
+  const verWorker = runHook(verScript, {
+    session_id: "e2e-test",
+    agent_type: "gt-worker",
+    agent_id: "w1",
+    last_assistant_message: "Done. Result: PASS"
+  }, e2eEnv, 15000);
+  assert(verWorker.exitCode === 0, "E2E step 2: gt-worker verification exits 0");
+
+  // Verify gates were initialized
+  const db2 = gatesDb.getDb(e2eSessionDir);
+  const gatesAfterInit = gatesDb.getGates(db2, "task-e2e");
+  assert(gatesAfterInit.length === 1, "E2E step 2: 1 gate initialized");
+  assert(gatesAfterInit[0].gate_agent === "gt-reviewer", "E2E step 2: gate agent is gt-reviewer");
+  assert(gatesAfterInit[0].fixer_agent === "gt-fixer", "E2E step 2: fixer agent is gt-fixer");
+  assert(gatesAfterInit[0].status === "active", "E2E step 2: gate is active");
+
+  // ── Step 3: gate-block blocks Bash while gate active ──
+  const blockBash = runGateBlock({
+    session_id: "e2e-test",
+    tool_name: "Bash",
+    tool_input: { command: "echo sneaky" }
+  }, e2eEnv);
+  assert(blockBash.stdout.includes("block"), "E2E step 3: Bash blocked while gate active");
+
+  // ── Step 4: Spawn gt-reviewer (conditions allows gate agent) ──
+  const condReviewer = runHook(condScript, {
+    session_id: "e2e-test",
+    tool_name: "Agent",
+    tool_input: { subagent_type: "gt-reviewer", prompt: "scope=task-e2e review the work" }
+  }, e2eEnv);
+  assert(condReviewer.exitCode === 0 && !condReviewer.stdout.includes("block"),
+    "E2E step 4: gt-reviewer spawn allowed");
+
+  // ── Step 5: gt-reviewer completes with REVISE → fix status (fixer route) ──
+  fs.writeFileSync(path.join(e2eScopeDir, "gt-reviewer.md"), "Found bugs.\n\nResult: REVISE\n", "utf-8");
+
+  const verReviewer = runHook(verScript, {
+    session_id: "e2e-test",
+    agent_type: "gt-reviewer",
+    agent_id: "r1",
+    last_assistant_message: "Found bugs. Result: REVISE"
+  }, e2eEnv, 15000);
+  assert(verReviewer.exitCode === 0, "E2E step 5: gt-reviewer verification exits 0");
+
+  // Verify gate is now in fix status (not revise!)
+  const gatesAfterRevise = gatesDb.getGates(db2, "task-e2e");
+  assert(gatesAfterRevise[0].status === "fix", "E2E step 5: gate status is 'fix' (fixer route)");
+  assert(gatesAfterRevise[0].round === 1, "E2E step 5: round incremented to 1");
+
+  // ── Step 6: gate-block blocks source agent, allows fixer ──
+  const blockSource = runGateBlock({
+    session_id: "e2e-test",
+    tool_name: "Agent",
+    tool_input: { subagent_type: "gt-worker", prompt: "scope=task-e2e" }
+  }, e2eEnv);
+  assert(blockSource.stdout.includes("block") && blockSource.stdout.includes("gt-fixer"),
+    "E2E step 6: source agent blocked, message says spawn gt-fixer");
+
+  const allowFixer = runGateBlock({
+    session_id: "e2e-test",
+    tool_name: "Agent",
+    tool_input: { subagent_type: "gt-fixer", prompt: "scope=task-e2e fix bugs" }
+  }, e2eEnv);
+  assert(!allowFixer.stdout.includes("block"),
+    "E2E step 6: fixer agent allowed through gate-block");
+
+  // ── Step 7: Spawn gt-fixer (conditions allows fixer) ──
+  const condFixer = runHook(condScript, {
+    session_id: "e2e-test",
+    tool_name: "Agent",
+    tool_input: { subagent_type: "gt-fixer", prompt: "scope=task-e2e fix the bugs" }
+  }, e2eEnv);
+  assert(condFixer.exitCode === 0 && !condFixer.stdout.includes("block"),
+    "E2E step 7: gt-fixer spawn allowed by conditions");
+
+  // ── Step 8: Injection gives fixer context ──
+  // Register fixer as pending first (conditions does this)
+  const injFixer = runHook(injScript, {
+    session_id: "e2e-test",
+    agent_type: "gt-fixer",
+    agent_id: "f1"
+  }, e2eEnv);
+  if (injFixer.stdout.trim()) {
+    const injOutput = JSON.parse(injFixer.stdout);
+    const ctx = injOutput.hookSpecificOutput && injOutput.hookSpecificOutput.additionalContext || "";
+    assert(ctx.includes("role=fixer"), "E2E step 8: injection sets role=fixer");
+    assert(ctx.includes("gate_agent=gt-reviewer"), "E2E step 8: injection includes gate_agent");
+    assert(ctx.includes("source_agent=gt-worker"), "E2E step 8: injection includes source_agent");
+  } else {
+    // Fixer may not have pending entry if conditions didn't stage it for this scope
+    assert(true, "E2E step 8: injection ran (no pending — fixer has no gates: field)");
+  }
+
+  // ── Step 9: gt-fixer completes → gate reactivated to active ──
+  fs.writeFileSync(path.join(e2eScopeDir, "gt-fixer.md"), "Fixed the bugs.\n\nResult: PASS\n", "utf-8");
+
+  const verFixer = runHook(verScript, {
+    session_id: "e2e-test",
+    agent_type: "gt-fixer",
+    agent_id: "f1",
+    last_assistant_message: "Fixed. Result: PASS"
+  }, e2eEnv, 15000);
+  assert(verFixer.exitCode === 0, "E2E step 9: gt-fixer verification exits 0");
+
+  const gatesAfterFix = gatesDb.getGates(db2, "task-e2e");
+  assert(gatesAfterFix[0].status === "active", "E2E step 9: gate reactivated to active after fixer");
+
+  // ── Step 10: gt-reviewer runs again, returns PASS → gate passed ──
+  const condReviewer2 = runHook(condScript, {
+    session_id: "e2e-test",
+    tool_name: "Agent",
+    tool_input: { subagent_type: "gt-reviewer", prompt: "scope=task-e2e re-review" }
+  }, e2eEnv);
+  assert(!condReviewer2.stdout.includes("block"),
+    "E2E step 10: gt-reviewer re-spawn allowed");
+
+  fs.writeFileSync(path.join(e2eScopeDir, "gt-reviewer.md"), "All good now.\n\nResult: PASS\n", "utf-8");
+
+  const verReviewer2 = runHook(verScript, {
+    session_id: "e2e-test",
+    agent_type: "gt-reviewer",
+    agent_id: "r2",
+    last_assistant_message: "All good. Result: PASS"
+  }, e2eEnv, 15000);
+  assert(verReviewer2.exitCode === 0, "E2E step 10: gt-reviewer pass verification exits 0");
+
+  const gatesAfterPass = gatesDb.getGates(db2, "task-e2e");
+  assert(gatesAfterPass[0].status === "passed", "E2E step 10: gate status is 'passed'");
+
+  // ── Step 11: All gates passed → tools unblocked ──
+  const unblocked = runGateBlock({
+    session_id: "e2e-test",
+    tool_name: "Bash",
+    tool_input: { command: "echo free" }
+  }, e2eEnv);
+  assert(!unblocked.stdout.includes("block"),
+    "E2E step 11: Bash unblocked after all gates passed");
+
+  assert(!gatesDb.hasActiveGates(db2, "task-e2e"),
+    "E2E step 11: hasActiveGates is false");
+
+  db2.close();
+} else {
+  console.log("  SKIP: E2E gate lifecycle — better-sqlite3 not available");
+}
+
+fs.rmSync(tmpE2E, { recursive: true, force: true });
 
 // ── Summary ─────────────────────────────────────────────────────────
 

@@ -9,7 +9,7 @@
  *   parseRequires(mdContent)       → string[] | null
  *   parseVerification(mdContent)   → string | null
  *   parseConditions(mdContent)     → string | null
- *   parseGates(mdContent)          → Array<{ agent, maxRounds }> | null
+ *   parseGates(mdContent)          → Array<{ agent, maxRounds, fixer? }> | null
  *   requiresScope(mdContent)       → boolean
  *   findAgentMd(agentType, projectRoot, home) → string | null
  *   VERDICT_RE                     → RegExp
@@ -126,9 +126,11 @@ function parseGates(mdContent) {
 
   const gates = [];
   for (const line of blockMatch[1].split(/\r?\n/)) {
-    const m = line.match(/^\s+-\s*\[\s*["']?([A-Za-z0-9_-]+)["']?\s*,\s*(\d+)\s*\]/);
+    const m = line.match(/^\s+-\s*\[\s*["']?([A-Za-z0-9_-]+)["']?\s*,\s*(\d+)\s*(?:,\s*["']?([A-Za-z0-9_-]+)["']?\s*)?\]/);
     if (m) {
-      gates.push({ agent: m[1], maxRounds: parseInt(m[2], 10) });
+      const entry = { agent: m[1], maxRounds: parseInt(m[2], 10) };
+      if (m[3]) entry.fixer = m[3];
+      gates.push(entry);
     }
   }
   return gates.length > 0 ? gates : null;
