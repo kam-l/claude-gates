@@ -38,10 +38,10 @@ try {
   let gaterVerified = false;
 
   if (db) {
-    // SQLite: check agents table for gater with PASS or CONVERGED
+    // SQLite: check agents table for any verifier with PASS or CONVERGED
     try {
       const row = db.prepare(
-        "SELECT 1 FROM agents WHERE agent = 'gater' AND verdict IN ('PASS','CONVERGED') LIMIT 1"
+        "SELECT 1 FROM agents WHERE agent IN ('gater','adversary') AND verdict IN ('PASS','CONVERGED') LIMIT 1"
       ).get();
       gaterVerified = !!row;
     } catch {}
@@ -51,14 +51,18 @@ try {
     try {
       const scopesFile = path.join(sessionDir, "session_scopes.json");
       const scopes = JSON.parse(fs.readFileSync(scopesFile, "utf-8"));
+      const verifiers = ["gater", "adversary"];
       for (const [scope, info] of Object.entries(scopes)) {
         if (scope === "_pending" || !info || !info.cleared) continue;
-        const gaterEntry = info.cleared.gater;
-        if (gaterEntry && typeof gaterEntry === "object" &&
-            (gaterEntry.verdict === "PASS" || gaterEntry.verdict === "CONVERGED")) {
-          gaterVerified = true;
-          break;
+        for (const v of verifiers) {
+          const entry = info.cleared[v];
+          if (entry && typeof entry === "object" &&
+              (entry.verdict === "PASS" || entry.verdict === "CONVERGED")) {
+            gaterVerified = true;
+            break;
+          }
         }
+        if (gaterVerified) break;
       }
     } catch {}
   }
