@@ -38,25 +38,7 @@ claude plugin marketplace add kam-l/claude-gates
 claude plugin install claude-gates
 ```
 
-Then run `/claude-gates:setup` — it checks dependencies, detects your stack, and configures gates interactively.
-
-## Quick Start
-
-Add `verification:` to any agent definition:
-
-```yaml
-# .claude/agents/implementer.md
----
-name: implementer
-verification: |
-  Does this show real implementation with working code?
-  Reply PASS or FAIL + reason.
----
-```
-
-That's it. The agent's output will be judged by the gater before the pipeline continues. Spawn with `scope=<name>` so gates know which pipeline it belongs to.
-
-Run `/claude-gates:setup` to configure all gates for your project interactively.
+Then run `/claude-gates:setup` — it checks dependencies, detects your stack, and walks you through every gate interactively. Or just point Claude at the [setup skill](skills/setup/SKILL.md) and ask.
 
 ## Gate Lifecycle
 
