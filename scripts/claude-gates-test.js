@@ -2187,15 +2187,15 @@ if (gblockDb) {
   assert(qualifiedSelf.exitCode === 0 && !qualifiedSelf.stdout.includes("block"),
     "active gate + plugin-qualified agent_type → allowed");
 
-  // Active gate + wrong agent_type → blocked
+  // Any subagent (even non-expected) → allowed (gate-block is for orchestrator only)
   const wrongCaller = runGateBlock({
     session_id: "gblock-test",
     tool_name: "Write",
     tool_input: { file_path: "/tmp/foo.js" },
     agent_type: "implementer"
   }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
-  assert(wrongCaller.stdout.includes("block"),
-    "active gate + wrong agent_type → blocked");
+  assert(!wrongCaller.stdout.includes("block"),
+    "any subagent agent_type → allowed (gate-block is for orchestrator)");
 
   // Active gate + MCP tool → blocked
   const mcpResult = runGateBlock({

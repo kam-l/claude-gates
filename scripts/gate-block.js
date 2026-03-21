@@ -54,11 +54,11 @@ try {
     if (expected) expectedAgents.set(expected, { scope: g.scope, status: g.status });
   }
 
-  // If the tool call is from any expected agent, allow it (subagent's own tools)
-  if (callerAgent) {
-    const bare = callerAgent.includes(":") ? callerAgent.split(":").pop() : callerAgent;
-    if (expectedAgents.has(bare)) process.exit(0);
-  }
+  // If the tool call is from ANY subagent (agent_type is set), allow it.
+  // Gate-block locks the ORCHESTRATOR, not subagents. Subagents are gated
+  // by SubagentStop verification — blocking them here causes cross-scope
+  // deadlocks when parallel pipelines have active gates.
+  if (callerAgent) process.exit(0);
 
   // Read-only tools always allowed
   if (READ_ONLY_TOOLS.includes(toolName)) process.exit(0);
