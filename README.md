@@ -50,218 +50,51 @@ That's it. The agent's output will be judged by the gater before the pipeline co
 
 ## Gate Lifecycle
 
-Every agent spawn passes through a deterministic pipeline. Gates fire at hook boundaries — not prompt-level, hook-level.
+Gates fire at hook boundaries — not prompt-level, hook-level.
 
 ```
-         Agent spawns
-              │
-     has conditions: ? ─── NO ─────────────────────────────┐
-              │                                             │
-             YES                                            │
-              │                                             │
-        gater evaluates ─── FAIL ──→ ⛔ Blocked             │
-              │                      orchestrator forced    │
-             PASS                    to adjust              │
-              │                                             │
-              │◄────────────────────────────────────────────┘
-         Agent executes
-              │
-        writes artifact
-              │
-     has verification: ? ── NO ────────────────────────────┐
-              │                                             │
-             YES                                            │
-              │                                             │
-        gater evaluates ─── FAIL ──→ 🔄 REVISE ────────┐   │
-              │                      agent rewrites     │   │
-             PASS                    and retries        │   │
-              │◄────────────────────────────────────────┘   │
-              │◄────────────────────────────────────────────┘
-        has gates: ? ────── NO ──────→ ✅ Complete
-              │
-             YES
-              │
-        reviewer agent ──── 🔄 REVISE ──→ agent rewrites ──┐
-              │                           and retries gate  │
-             PASS                                           │
-              │◄────────────────────────────────────────────┘
-        security agent
-              │
-             PASS
-              │
-         ✅ Complete
+Agent spawns ──→ conditions: ──→ Agent runs ──→ verification: ──→ gates: ──→ ✅ Done
+                      │                              │               │
+                     FAIL                           FAIL           REVISE
+                      ▼                              ▼               ▼
+                 ⛔ Blocked                    🔄 Rewrites     🔄 Rewrites
+                 orchestrator                  retries          retries gate
+                 forced to adjust
 ```
-
-Session-level gates run independently of the agent pipeline:
-
-| Gate | Fires at | Purpose |
-|------|----------|---------|
-| **Plan** | `ExitPlanMode` | Block unreviewed plans |
-| **Edit** | `Edit` · `Write` | Auto-format on save |
-| **Commit** | `Bash` (git commit) | Run tests before commit |
-| **Loop** | `Bash` · `Edit` · `Write` | Kill 3× identical calls |
-| **Stop** | session end | Catch debug leftovers |
 
 ## The Gates
 
-Every gate is a hook that fires at a specific moment. All gates are **fail-open** — if something breaks, your work continues unblocked.
+All gates are **fail-open** — if something breaks, your work continues unblocked.
 
----
+| Gate | Hook | What it does |
+|------|------|-------------|
+| **Conditions** | `PreToolUse:Agent` | Gater evaluates spawn prompt against `conditions:` field. FAIL blocks the spawn |
+| **Verification** | `SubagentStop` | Structural check (artifact exists, `Result:` line) + semantic check (gater judges content quality) |
+| **Gate Chain** | `SubagentStop` + `PreToolUse:Agent` | Sequential reviewers from `gates:` field. Each must PASS before the next runs |
+| **Plan** | `PreToolUse:ExitPlanMode` | Blocks unreviewed plans (>20 lines) until gater returns PASS. Auto-allows after 3 attempts |
+| **Commit** | `PreToolUse:Bash` | Runs configured commands before `git commit`. Disabled by default |
+| **Edit** | `PostToolUse:Edit\|Write` | Tracks edited files, runs opt-in formatters (deduped per file). Non-blocking |
+| **Stop** | `Stop` | Scans edited files for debug patterns (`TODO`, `console.log`). Nudges uncommitted changes |
 
-### Verification Gate
-
-**When:** After an agent completes (SubagentStop)
-
-**Why:** Agents produce garbage that looks like output. A file exists, it has content, but it's placeholder text that passed no real scrutiny.
-
-**How it works:** Two layers. The **structural layer** checks that the artifact file exists and contains a `Result:` line. The **semantic layer** runs `claude -p --agent claude-gates:gater` to judge whether the content demonstrates real work.
+### Agent frontmatter fields
 
 ```yaml
-# .claude/agents/implementer.md
 ---
 name: implementer
-verification: |
-  Does this show real implementation with working code?
+verification: |                        # gater judges output quality after completion
+  Does this show real implementation?
   Reply PASS or FAIL + reason.
----
-```
-
-The verification prompt is what the gater agent evaluates. If it says FAIL, the agent is blocked from completing until it rewrites.
-
----
-
-### Gate Chain
-
-**When:** After a source agent completes with PASS (SubagentStop + PreToolUse:Agent)
-
-**Why:** Some artifacts need multiple reviewers in sequence — a code reviewer, then a security auditor, then a playtester. Each gate agent must pass before the next one runs.
-
-**How it works:** Add `gates:` to the source agent. After it completes, gates activate in order. Each gate agent can PASS (advance), REVISE (send back to source or fixer), or exhaust its max rounds (fail the chain).
-
-```yaml
-# .claude/agents/implementer.md
----
-name: implementer
-gates:
-  - [reviewer, 3]
+conditions: |                          # gater checks spawn prompt before agent runs
+  Only spawn for authentication or
+  data handling changes.
+gates:                                 # sequential reviewers after PASS
+  - [reviewer, 3]                      # [agent, max_rounds]
   - [security-auditor, 2]
-  - [reviewer, 3, fixer]    # optional: route REVISE to a fixer agent
+  - [reviewer, 3, fixer]              # optional 3rd element: fixer agent for REVISE
 ---
 ```
 
-The number is max rounds. If the gate agent returns REVISE 3 times, the chain fails. The optional third element names a fixer agent that handles revisions instead of the source agent.
-
----
-
-### Conditions Gate
-
-**When:** Before an agent spawns (PreToolUse:Agent)
-
-**Why:** Some agents should only spawn when the prompt meets certain criteria — the right context is present, the right question is being asked.
-
-**How it works:** Add `conditions:` to your agent definition. The gater agent evaluates the spawn prompt against these conditions and returns PASS or FAIL.
-
-```yaml
----
-name: security-auditor
-conditions: |
-  Only spawn if the prompt mentions authentication, authorization,
-  or data handling. Not for UI-only changes.
----
-```
-
----
-
-### Plan Gate
-
-**When:** Before exiting plan mode (PreToolUse:ExitPlanMode)
-
-**Why:** Non-trivial plans (>20 lines) should be reviewed before execution. Without this, Claude exits plan mode and starts implementing a plan that may have gaps.
-
-**How it works:** Blocks ExitPlanMode until the gater agent has reviewed the plan and returned PASS. Auto-allows after 3 attempts (safety valve). After each ExitPlanMode, the verdict is cleared so the next plan needs fresh verification.
-
-No configuration needed — works automatically. To verify a plan, spawn `claude-gates:gater` with `scope=verify-plan`.
-
----
-
-### Commit Gate
-
-**When:** Before `git commit` (PreToolUse:Bash)
-
-**Why:** Catch issues before they're committed — run tests, linting, type checks, whatever your project needs.
-
-**How it works:** Detects `git commit` in Bash commands and runs your configured validation commands first. If any command fails, the commit is blocked.
-
-**Default: disabled.** Enable in `claude-gates.json`:
-
-```json
-{
-  "commit_gate": {
-    "commands": ["npm test", "npm run lint"],
-    "enabled": true
-  }
-}
-```
-
----
-
-### Edit Gate
-
-**When:** After every file edit (PostToolUse:Edit|Write)
-
-**Why:** Formatting should happen automatically when files change, not as a manual step. The edit gate tracks every edited file and runs opt-in formatter commands on each new file (deduped — same file edited twice runs formatters once).
-
-**How it works:** Tracks edited files in SQLite (stop-gate reads this for commit nudging). If `edit_gate.commands` is configured, runs each command with `{file}` replaced by the edited file's absolute path. Failures are non-fatal (stderr warning, never blocks).
-
-**Default: no formatters (opt-in).** Configure in `claude-gates.json`:
-
-```json
-{
-  "edit_gate": {
-    "commands": ["dotnet format --include {file}"]
-  }
-}
-```
-
-Run `/claude-gates:setup` to auto-detect formatters for your stack.
-
----
-
-### Loop Gate
-
-**When:** Before Bash, Edit, or Write (PreToolUse:Bash|Edit|Write)
-
-**Why:** Agents get stuck in loops — running the same command, making the same edit, writing the same file. Three identical consecutive calls means something is wrong.
-
-**How it works:** Hashes `tool_name + tool_input`. If the same hash appears 3 times in a row, blocks with a message to change approach. A different call resets the counter.
-
-No configuration — always active.
-
----
-
-### Stop Gate
-
-**When:** At session end (Stop)
-
-**Why:** Debug leftovers ship to production. `console.log`, `TODO`, `HACK` — patterns that belong in development, not in committed code.
-
-**How it works:** Scans all files edited during the session for configurable patterns. Also nudges if tracked files have uncommitted changes. Two modes: **warn** (stderr, default) or **nudge** (blocks once, second stop passes).
-
-**Default patterns:** `TODO`, `HACK`, `FIXME`, `console.log`. Configure in `claude-gates.json`:
-
-```json
-{
-  "stop_gate": {
-    "patterns": ["TODO", "HACK", "FIXME", "console.log", "debugger"],
-    "commands": ["dotnet build"],
-    "mode": "nudge"
-  }
-}
-```
-
-`commands` run at session end — useful for build verification. `mode: "nudge"` blocks the first stop so you can clean up; stopping again proceeds.
-
----
+Spawn agents with `scope=<name>` so gates know which pipeline they belong to.
 
 ## Configuration
 

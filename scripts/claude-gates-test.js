@@ -768,77 +768,14 @@ assert(deletedResult.exitCode === 0 && !deletedResult.stdout.includes("block"), 
 fs.rmSync(tmpStopSession, { recursive: true, force: true });
 fs.rmSync(deletedStopSession, { recursive: true, force: true });
 
-// ── loop-gate integration ────────────────────────────────────────────
-
-describe("loop-gate integration");
-
-const loopGateScript = path.join(__dirname, "loop-gate.js");
-
-function runLoopGate(payload, env) {
-  try {
-    const result = execSync(`node "${loopGateScript}"`, {
-      input: JSON.stringify(payload),
-      encoding: "utf-8",
-      timeout: 5000,
-      env: { ...process.env, ...env }
-    });
-    return { stdout: result, exitCode: 0 };
-  } catch (err) {
-    return { stdout: err.stdout || "", exitCode: err.status };
-  }
-}
-
-const tmpLoopSession = fs.mkdtempSync(path.join(os.tmpdir(), "cgates-loop-"));
-const loopSessionDir = path.join(tmpLoopSession, ".claude", "sessions", "loop-test");
-fs.mkdirSync(loopSessionDir, { recursive: true });
-
-const loopPayload = {
-  session_id: "loop-test",
-  tool_name: "Bash",
-  tool_input: { command: "echo hello" }
-};
-
-// Test: under threshold allows (1st and 2nd calls)
-const loop1 = runLoopGate(loopPayload, { USERPROFILE: tmpLoopSession, HOME: tmpLoopSession });
-assert(loop1.exitCode === 0 && !loop1.stdout.includes("block"), "loop-gate allows 1st call");
-
-const loop2 = runLoopGate(loopPayload, { USERPROFILE: tmpLoopSession, HOME: tmpLoopSession });
-assert(loop2.exitCode === 0 && !loop2.stdout.includes("block"), "loop-gate allows 2nd call");
-
-// Test: 3rd consecutive identical call → block
-const loop3 = runLoopGate(loopPayload, { USERPROFILE: tmpLoopSession, HOME: tmpLoopSession });
-if (loop3.stdout.trim()) {
-  const loopOutput = JSON.parse(loop3.stdout);
-  assert(loopOutput.decision === "block", "loop-gate blocks 3rd identical call");
-} else {
-  assert(false, "loop-gate blocks 3rd identical call (no output)");
-}
-
-// Test: different call resets streak
-const diffPayload = {
-  session_id: "loop-test",
-  tool_name: "Bash",
-  tool_input: { command: "echo different" }
-};
-const loopDiff = runLoopGate(diffPayload, { USERPROFILE: tmpLoopSession, HOME: tmpLoopSession });
-assert(loopDiff.exitCode === 0 && !loopDiff.stdout.includes("block"), "different call resets streak");
-
-fs.rmSync(tmpLoopSession, { recursive: true, force: true });
-
 // ── hooks.json wiring: new gates ─────────────────────────────────────
 
 describe("hooks.json wiring: new gates");
 
 const bashHook = preToolUse.find(h => h.matcher === "Bash");
 assert(
-  bashHook && bashHook.hooks.some(h => h.command.includes("loop-gate")),
-  "PreToolUse:Bash loop-gate wired"
-);
-
-const editPreHook = preToolUse.find(h => h.matcher === "Edit");
-assert(
-  editPreHook && editPreHook.hooks.some(h => h.command.includes("loop-gate")),
-  "PreToolUse:Edit loop-gate wired"
+  bashHook && bashHook.hooks.some(h => h.command.includes("commit-gate")),
+  "PreToolUse:Bash commit-gate wired"
 );
 
 const postToolUse = hooksJson.hooks.PostToolUse || [];
@@ -1098,34 +1035,6 @@ const db = gatesDb.getDb(tmpDbSession);
     console.log("  SKIP: fixer migration test — better-sqlite3 not available");
   }
   fs.rmSync(tmpFixerMigrate, { recursive: true, force: true });
-
-  // ── Concurrency test: two loop-gate writes ──
-  describe("SQLite DB: concurrent loop-gate writes");
-
-  const tmpConc = fs.mkdtempSync(path.join(os.tmpdir(), "cgates-conc-"));
-  const concSessionDir = path.join(tmpConc, ".claude", "sessions", "conc-test");
-  fs.mkdirSync(concSessionDir, { recursive: true });
-
-  // Run two loop-gate processes simultaneously with different payloads
-  const concPayloadA = JSON.stringify({ session_id: "conc-test", tool_name: "Bash", tool_input: { command: "echo A" } });
-  const concPayloadB = JSON.stringify({ session_id: "conc-test", tool_name: "Bash", tool_input: { command: "echo B" } });
-  const loopScript = path.join(__dirname, "loop-gate.js");
-
-  try {
-    // Spawn both — they will run close to concurrently
-    const { execSync: es } = require("child_process");
-    es(`node "${loopScript}"`, { input: concPayloadA, encoding: "utf-8", timeout: 5000, env: { ...process.env, USERPROFILE: tmpConc, HOME: tmpConc } });
-    es(`node "${loopScript}"`, { input: concPayloadB, encoding: "utf-8", timeout: 5000, env: { ...process.env, USERPROFILE: tmpConc, HOME: tmpConc } });
-
-    // Verify both hashes appear in DB
-    const cdb = gatesDb.getDb(concSessionDir);
-    const cHashes = gatesDb.getLastNHashes(cdb, 10);
-    assert(cHashes.length === 2, "concurrent writes: both hashes recorded");
-    cdb.close();
-  } catch (err) {
-    assert(false, `concurrent writes: ${err.message}`);
-  }
-  fs.rmSync(tmpConc, { recursive: true, force: true });
 
   // ── Integration: conditions creates session.db ──
   describe("SQLite DB: conditions hook creates session.db");

@@ -1,5 +1,5 @@
 ---
-description: "ClaudeGates v2 — declarative pipeline gates. Use when spawning gated agents, debugging gate failures, writing agent definitions with requires:/verification:/conditions:/gates: fields, or understanding pipeline ordering. Triggers on: 'gate failed', 'agent blocked', 'missing artifact', 'requires not met', 'verification failed', 'scope=', 'session_scopes', 'claude-gates', 'pipeline ordering', 'writing an agent', 'requires: field', 'verification: field', 'conditions: field', 'gates: field', 'how do I gate', 'agent frontmatter', 'Result: PASS', 'Result: FAIL', 'Result: REVISE', 'Result: CONVERGED', 'SubagentStop', 'SubagentStart', 'edit-gate', 'stop-gate', 'loop-gate', 'verdict object', 'gate chain', 'post-completion gates'."
+description: "ClaudeGates v2 — declarative pipeline gates. Use when spawning gated agents, debugging gate failures, writing agent definitions with verification:/conditions:/gates: fields, or understanding pipeline ordering. Triggers on: 'gate failed', 'agent blocked', 'missing artifact', 'verification failed', 'scope=', 'session_scopes', 'claude-gates', 'pipeline ordering', 'writing an agent', 'verification: field', 'conditions: field', 'gates: field', 'how do I gate', 'agent frontmatter', 'Result: PASS', 'Result: FAIL', 'Result: REVISE', 'Result: CONVERGED', 'SubagentStop', 'SubagentStart', 'edit-gate', 'stop-gate', 'verdict object', 'gate chain', 'post-completion gates'."
 user-invocable: false
 ---
 
@@ -97,7 +97,6 @@ After verification, `session_scopes.json` stores structured verdict objects:
 | `plan-gate.js` | PreToolUse:ExitPlanMode | Verdict-based: checks for gater PASS in session_scopes |
 | `commit-gate.js` | PreToolUse:Bash | Pre-commit validation (opt-in via `claude-gates.json`) |
 | `edit-gate.js` | PostToolUse:Edit\|Write | Tracks edited files, runs opt-in formatters |
-| `loop-gate.js` | PreToolUse:Bash\|Edit\|Write | Breaks infinite loops of identical tool calls |
 | `stop-gate.js` | Stop | Configurable debug scan + custom commands + commit nudge |
 
 ## Troubleshooting
