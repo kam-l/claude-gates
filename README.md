@@ -2,10 +2,11 @@
 
 Quality gates for Claude Code agents. Your agents shall not pass without earning it.
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-plugin-blueviolet)](https://code.claude.com/docs/en/plugins)
-[![Tests: 287 passing](https://img.shields.io/badge/tests-287_passing-green)]()
-[![Version: 2.7.0](https://img.shields.io/badge/version-2.7.0-blue)]()
+[![Gates: 8](https://img.shields.io/badge/gates-8-orange)]()
+[![Tests](https://github.com/kam-l/claude-gates/actions/workflows/test.yml/badge.svg)](https://github.com/kam-l/claude-gates/actions/workflows/test.yml)
+[![Version](https://img.shields.io/github/v/tag/kam-l/claude-gates?label=version)](https://github.com/kam-l/claude-gates/releases)
+[![npm](https://img.shields.io/npm/v/claude-gates)](https://www.npmjs.com/package/claude-gates)
 
 <p align="center">
   <img src="gandalf.png" alt="You shall not pass!" width="400">
