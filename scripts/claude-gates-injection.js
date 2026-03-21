@@ -3,8 +3,8 @@
  * ClaudeGates v2 — SubagentStart injection hook.
  *
  * Injects output_filepath into agent context so the agent knows exactly
- * where to write its artifact. Reads scope from pending table (SQLite,
- * staged by the conditions hook).
+ * where to write its artifact. Resolves scope from the subagent's transcript
+ * (first line contains the spawn prompt with scope=<name>).
  *
  * For gate agents, enhances context with source agent info.
  *
@@ -13,7 +13,25 @@
 
 const fs = require("fs");
 const path = require("path");
-const { getDb, getPending, getActiveGate, getFixGate } = require("./claude-gates-db.js");
+const { getDb, getAgent, getActiveGate, getFixGate } = require("./claude-gates-db.js");
+
+/**
+ * Extract scope= from the subagent's own transcript JSONL.
+ * The first line is always the user message (spawn prompt) containing scope=.
+ * Reads only the first 2KB — no performance concern.
+ */
+function extractScopeFromTranscript(transcriptPath) {
+  if (!transcriptPath) return null;
+  try {
+    const fd = fs.openSync(transcriptPath, "r");
+    const buf = Buffer.alloc(2048);
+    const bytesRead = fs.readSync(fd, buf, 0, 2048, 0);
+    fs.closeSync(fd);
+    const match = buf.toString("utf-8", 0, bytesRead).match(/scope=([A-Za-z0-9_-]+)/);
+    return match ? match[1] : null;
+  } catch {}
+  return null;
+}
 
 try {
   const data = JSON.parse(fs.readFileSync(0, "utf-8"));
@@ -26,39 +44,44 @@ try {
 
   const sessionDir = path.join(HOME, ".claude", "sessions", sessionId).replace(/\\/g, "/");
 
-  // Read output_filepath and gate context from SQLite
+  // Resolve scope from transcript (order-independent, parallel-safe)
+  let scope = extractScopeFromTranscript(data.transcript_path);
   let outputFilepath = "";
   let gateContext = "";
+
   const db = getDb(sessionDir);
   try {
-    const pending = getPending(db, agentType);
-    if (pending && pending.outputFilepath) {
-      outputFilepath = pending.outputFilepath;
-      // Check if this is a gate agent or fixer agent
-      if (pending.scope) {
-        const activeGate = getActiveGate(db, pending.scope);
-        if (activeGate && activeGate.gate_agent === agentType) {
-          const sourceArtifact = path.join(
-            sessionDir, pending.scope, `${activeGate.source_agent}.md`
-          ).replace(/\\/g, "/");
-          gateContext =
-            `role=gate\n` +
-            `source_agent=${activeGate.source_agent}\n` +
-            `source_artifact=${sourceArtifact}\n` +
-            `gate_round=${activeGate.round}/${activeGate.max_rounds}\n`;
-        }
-        const fixGateRow = getFixGate(db, pending.scope);
-        if (fixGateRow && fixGateRow.fixer_agent === agentType) {
-          const sourceArtifact = path.join(
-            sessionDir, pending.scope, `${fixGateRow.source_agent}.md`
-          ).replace(/\\/g, "/");
-          gateContext =
-            `role=fixer\n` +
-            `source_agent=${fixGateRow.source_agent}\n` +
-            `source_artifact=${sourceArtifact}\n` +
-            `gate_agent=${fixGateRow.gate_agent}\n` +
-            `gate_round=${fixGateRow.round}/${fixGateRow.max_rounds}\n`;
-        }
+    if (scope) {
+      const agentRow = getAgent(db, scope, agentType);
+      if (agentRow && agentRow.outputFilepath) {
+        outputFilepath = agentRow.outputFilepath;
+      }
+    }
+
+    // Gate context: enhance for gate agents and fixer agents
+    if (scope && outputFilepath) {
+      const activeGate = getActiveGate(db, scope);
+      if (activeGate && activeGate.gate_agent === agentType) {
+        const sourceArtifact = path.join(
+          sessionDir, scope, `${activeGate.source_agent}.md`
+        ).replace(/\\/g, "/");
+        gateContext =
+          `role=gate\n` +
+          `source_agent=${activeGate.source_agent}\n` +
+          `source_artifact=${sourceArtifact}\n` +
+          `gate_round=${activeGate.round}/${activeGate.max_rounds}\n`;
+      }
+      const fixGateRow = getFixGate(db, scope);
+      if (fixGateRow && fixGateRow.fixer_agent === agentType) {
+        const sourceArtifact = path.join(
+          sessionDir, scope, `${fixGateRow.source_agent}.md`
+        ).replace(/\\/g, "/");
+        gateContext =
+          `role=fixer\n` +
+          `source_agent=${fixGateRow.source_agent}\n` +
+          `source_artifact=${sourceArtifact}\n` +
+          `gate_agent=${fixGateRow.gate_agent}\n` +
+          `gate_round=${fixGateRow.round}/${fixGateRow.max_rounds}\n`;
       }
     }
   } finally {

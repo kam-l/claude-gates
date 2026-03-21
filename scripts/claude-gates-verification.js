@@ -66,19 +66,23 @@ try {
   if (!verification && !agentGates) {
     const db0 = gatesDb.getDb(sessionDir);
     try {
+      // Try to extract scope from message for parallel-safe lookups
+      const artifactInfo0 = extractArtifactPath(lastMessage, sessionDir, agentType);
+      const targetScope0 = artifactInfo0 ? artifactInfo0.scope : null;
+
       // Check if this agent is a fixer completing for a gate in 'fix' status
-      const fixRow = db0.prepare(
-        "SELECT scope FROM gates WHERE fixer_agent = ? AND status = 'fix' LIMIT 1"
-      ).get(bareAgentType);
+      const fixRow = targetScope0
+        ? db0.prepare("SELECT scope FROM gates WHERE fixer_agent = ? AND status = 'fix' AND scope = ? LIMIT 1").get(bareAgentType, targetScope0)
+        : db0.prepare("SELECT scope FROM gates WHERE fixer_agent = ? AND status = 'fix' LIMIT 1").get(bareAgentType);
       if (fixRow) {
         const finalVerdict = extractVerdict(lastMessage);
         processGateTransitions(db0, fixRow.scope, bareAgentType, finalVerdict, mdContent);
         process.exit(0);
       }
       // Check if this agent is a source completing for a gate in 'revise' status
-      const revRow = db0.prepare(
-        "SELECT scope FROM gates WHERE source_agent = ? AND status = 'revise' LIMIT 1"
-      ).get(bareAgentType);
+      const revRow = targetScope0
+        ? db0.prepare("SELECT scope FROM gates WHERE source_agent = ? AND status = 'revise' AND scope = ? LIMIT 1").get(bareAgentType, targetScope0)
+        : db0.prepare("SELECT scope FROM gates WHERE source_agent = ? AND status = 'revise' LIMIT 1").get(bareAgentType);
       if (revRow) {
         const finalVerdict = extractVerdict(lastMessage);
         processGateTransitions(db0, revRow.scope, bareAgentType, finalVerdict, mdContent);

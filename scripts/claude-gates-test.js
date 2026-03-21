@@ -387,10 +387,18 @@ function runInjection(payload, env) {
   }
 }
 
-// Gated agent with pending → should inject output_filepath with <agent_gate importance="critical">
+// Create a transcript JSONL for the reviewer agent (scope=task-2 matches conditions test above)
+const injTranscript = path.join(tmpSession, "reviewer-transcript.jsonl");
+fs.writeFileSync(injTranscript, JSON.stringify({
+  type: "user",
+  message: { role: "user", content: "scope=task-2 Review the implementation" }
+}) + "\n", "utf-8");
+
+// Gated agent with transcript → should inject output_filepath with <agent_gate importance="critical">
 const injResult = runInjection({
   session_id: "test-session",
-  agent_type: "reviewer"
+  agent_type: "reviewer",
+  transcript_path: injTranscript
 }, { USERPROFILE: tmpSession, HOME: tmpSession });
 
 if (injResult.stdout.trim()) {
@@ -426,6 +434,91 @@ if (ungatedResult.stdout.trim()) {
 } else {
   assert(false, "ungated agent gets session_dir (no output)");
   assert(false, "ungated agent gets plain <agent_gate> (no output)");
+}
+
+// ── Transcript-based scope resolution (parallel-safe) ──
+
+// Test: transcript with scope= → resolves correctly
+{
+  const tmpParallel = fs.mkdtempSync(path.join(os.tmpdir(), "cgates-parallel-"));
+  const parSessionDir = path.join(tmpParallel, ".claude", "sessions", "parallel-test");
+  fs.mkdirSync(parSessionDir, { recursive: true });
+
+  // Register two agents with the same type in different scopes
+  const parDb = gatesDb.getDb(parSessionDir);
+  gatesDb.registerAgent(parDb, "scope-a", "gt-worker", parSessionDir.replace(/\\/g, "/") + "/scope-a/gt-worker.md");
+  gatesDb.registerAgent(parDb, "scope-b", "gt-worker", parSessionDir.replace(/\\/g, "/") + "/scope-b/gt-worker.md");
+  parDb.close();
+
+  // Transcript for agent in scope-a
+  const transcriptA = path.join(tmpParallel, "agent-a.jsonl");
+  fs.writeFileSync(transcriptA, JSON.stringify({
+    type: "user", message: { role: "user", content: "scope=scope-a Write artifact" }
+  }) + "\n", "utf-8");
+
+  // Transcript for agent in scope-b
+  const transcriptB = path.join(tmpParallel, "agent-b.jsonl");
+  fs.writeFileSync(transcriptB, JSON.stringify({
+    type: "user", message: { role: "user", content: "scope=scope-b Write artifact" }
+  }) + "\n", "utf-8");
+
+  const resultA = runInjection({
+    session_id: "parallel-test",
+    agent_type: "gt-worker",
+    transcript_path: transcriptA
+  }, { USERPROFILE: tmpParallel, HOME: tmpParallel });
+
+  const resultB = runInjection({
+    session_id: "parallel-test",
+    agent_type: "gt-worker",
+    transcript_path: transcriptB
+  }, { USERPROFILE: tmpParallel, HOME: tmpParallel });
+
+  if (resultA.stdout.trim() && resultB.stdout.trim()) {
+    const ctxA = JSON.parse(resultA.stdout).hookSpecificOutput.additionalContext;
+    const ctxB = JSON.parse(resultB.stdout).hookSpecificOutput.additionalContext;
+    assert(ctxA.includes("scope-a/gt-worker.md"), "parallel: transcript A resolves to scope-a");
+    assert(ctxB.includes("scope-b/gt-worker.md"), "parallel: transcript B resolves to scope-b");
+    assert(!ctxA.includes("scope-b"), "parallel: transcript A does NOT contain scope-b");
+    assert(!ctxB.includes("scope-a"), "parallel: transcript B does NOT contain scope-a");
+  } else {
+    assert(false, "parallel: transcript A resolves to scope-a (no output)");
+    assert(false, "parallel: transcript B resolves to scope-b (no output)");
+    assert(false, "parallel: no cross-contamination A");
+    assert(false, "parallel: no cross-contamination B");
+  }
+
+  // Test: no transcript_path → ungated (session_dir only)
+  const noTranscript = runInjection({
+    session_id: "parallel-test",
+    agent_type: "gt-worker"
+  }, { USERPROFILE: tmpParallel, HOME: tmpParallel });
+  if (noTranscript.stdout.trim()) {
+    const noCtx = JSON.parse(noTranscript.stdout).hookSpecificOutput.additionalContext;
+    assert(noCtx.includes("session_dir="), "no transcript → ungated with session_dir");
+  } else {
+    assert(false, "no transcript → ungated (no output)");
+  }
+
+  // Test: transcript without scope= → ungated
+  const noScopeTranscript = path.join(tmpParallel, "no-scope.jsonl");
+  fs.writeFileSync(noScopeTranscript, JSON.stringify({
+    type: "user", message: { role: "user", content: "Just do something" }
+  }) + "\n", "utf-8");
+  const noScopeResult = runInjection({
+    session_id: "parallel-test",
+    agent_type: "gt-worker",
+    transcript_path: noScopeTranscript
+  }, { USERPROFILE: tmpParallel, HOME: tmpParallel });
+  if (noScopeResult.stdout.trim()) {
+    const nsCtx = JSON.parse(noScopeResult.stdout).hookSpecificOutput.additionalContext;
+    assert(nsCtx.includes("session_dir=") && !nsCtx.includes("output_filepath="),
+      "transcript without scope= → ungated");
+  } else {
+    assert(false, "transcript without scope= → ungated (no output)");
+  }
+
+  fs.rmSync(tmpParallel, { recursive: true, force: true });
 }
 
 // Cleanup
@@ -2379,11 +2472,16 @@ if (e2eDb) {
     "E2E step 7: gt-fixer spawn allowed by conditions");
 
   // ── Step 8: Injection gives fixer context ──
-  // Register fixer as pending first (conditions does this)
+  // Create transcript for fixer with scope=task-e2e
+  const fixerTranscript = path.join(tmpE2E, "fixer-transcript.jsonl");
+  fs.writeFileSync(fixerTranscript, JSON.stringify({
+    type: "user", message: { role: "user", content: "scope=task-e2e fix the bugs" }
+  }) + "\n", "utf-8");
   const injFixer = runHook(injScript, {
     session_id: "e2e-test",
     agent_type: "gt-fixer",
-    agent_id: "f1"
+    agent_id: "f1",
+    transcript_path: fixerTranscript
   }, e2eEnv);
   if (injFixer.stdout.trim()) {
     const injOutput = JSON.parse(injFixer.stdout);

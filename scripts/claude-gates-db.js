@@ -383,8 +383,10 @@ function isCleared(db, scope, agent) {
  * Find which scope an agent is registered in (excludes system scopes starting with _).
  */
 function findAgentScope(db, agent) {
+  // Prefer entries with no verdict (just spawned, not yet completed).
+  // Among those, take the most recently inserted (highest rowid).
   const row = db.prepare(
-    "SELECT scope FROM agents WHERE agent = ? AND SUBSTR(scope, 1, 1) != '_' LIMIT 1"
+    "SELECT scope FROM agents WHERE agent = ? AND SUBSTR(scope, 1, 1) != '_' ORDER BY CASE WHEN verdict IS NULL THEN 0 ELSE 1 END, rowid DESC LIMIT 1"
   ).get(agent);
   return row ? row.scope : null;
 }
@@ -394,8 +396,13 @@ function findAgentScope(db, agent) {
  * Excludes system scopes.
  */
 function getPending(db, agent) {
+  // For parallel pipelines, the same agent_type may exist in multiple scopes.
+  // Prefer entries with no verdict (just spawned, not yet completed).
+  // Among those, take the most recently inserted (highest rowid).
+  // This is safe because registerAgent is called sequentially per spawn,
+  // and SubagentStart fires after PreToolUse:Agent for the same spawn.
   const row = db.prepare(
-    "SELECT scope, outputFilepath FROM agents WHERE agent = ? AND outputFilepath IS NOT NULL AND SUBSTR(scope, 1, 1) != '_' LIMIT 1"
+    "SELECT scope, outputFilepath FROM agents WHERE agent = ? AND outputFilepath IS NOT NULL AND SUBSTR(scope, 1, 1) != '_' ORDER BY CASE WHEN verdict IS NULL THEN 0 ELSE 1 END, rowid DESC LIMIT 1"
   ).get(agent);
   return row || null;
 }
