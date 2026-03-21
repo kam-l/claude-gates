@@ -1495,7 +1495,7 @@ assert(!commitDisabled.stdout.includes("block"), "commit-gate disabled: no block
 // Test: non-commit command → no block
 const commitEnabledConfig = path.join(os.tmpdir(), "cg-commit-enabled.json");
 fs.writeFileSync(commitEnabledConfig, JSON.stringify({
-  commit_gate: { enabled: true, commands: ["node -e process.exit(1)"] }
+  commit_gate: { enabled: true, commands: ["node -e \"process.exit(1)\""] }
 }), "utf-8");
 const nonCommit = runCommitGate(
   { tool_input: { command: "git status" } },
@@ -1513,7 +1513,7 @@ assert(commitFail.stdout.includes("block"), "commit-gate: failing command blocks
 // Test: git commit + passing command → no block
 const commitPassConfig = path.join(os.tmpdir(), "cg-commit-pass.json");
 fs.writeFileSync(commitPassConfig, JSON.stringify({
-  commit_gate: { enabled: true, commands: ["node -e process.exit(0)"] }
+  commit_gate: { enabled: true, commands: ["node -e \"process.exit(0)\""] }
 }), "utf-8");
 const commitPass = runCommitGate(
   { tool_input: { command: "git commit -m 'test'" } },

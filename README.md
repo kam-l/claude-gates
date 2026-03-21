@@ -6,7 +6,7 @@ Quality gates for Claude Code agents. Your agents shall not pass without earning
 [![Gates: 8](https://img.shields.io/badge/gates-8-orange)]()
 [![Tests](https://github.com/kam-l/claude-gates/actions/workflows/test.yml/badge.svg)](https://github.com/kam-l/claude-gates/actions/workflows/test.yml)
 [![Version](https://img.shields.io/github/v/tag/kam-l/claude-gates?label=version)](https://github.com/kam-l/claude-gates/releases)
-[![npm](https://img.shields.io/npm/v/claude-gates)](https://www.npmjs.com/package/claude-gates)
+
 
 <p align="center">
   <img src="gandalf.png" alt="You shall not pass!" width="400">
