@@ -2,48 +2,22 @@
 /**
  * ClaudeGates v2 — SubagentStart injection hook.
  *
- * Injects output_filepath into agent context so the agent knows exactly
- * where to write its artifact.
+ * Injects the artifact path PATTERN into agent context. The agent derives
+ * its own output_filepath from: session_dir + scope (from prompt) + agent_type.
  *
- * Scope resolution at SubagentStart: best-effort via DB (getPending).
+ * This eliminates the getPending race condition for parallel pipelines:
+ * each agent knows its scope from its own prompt, so no DB lookup needed
+ * for path resolution. No wrong-scope writes, no file collisions.
  *
- * WHY NOT TRANSCRIPT: The subagent's JSONL doesn't exist yet at
- * SubagentStart — Claude Code writes the first line AFTER this hook.
- * For parallel same-type agents, getPending may return wrong scope.
- * This is acceptable: SubagentStop reads agent_transcript_path
- * (which DOES exist by then) and blocks until the artifact is at
- * the correct path. See claude-gates-verification.js for the
- * authoritative scope resolver.
- *
- * For gate agents, enhances context with source agent info.
+ * Gate context (role, source_agent, source_artifact) is best-effort
+ * enrichment via DB lookup — helpful but not required for correctness.
  *
  * Fail-open.
  */
 
 const fs = require("fs");
 const path = require("path");
-const { getDb, getAgent, getPending, getActiveGate, getFixGate } = require("./claude-gates-db.js");
-
-/**
- * Extract scope= from a transcript JSONL file.
- * Reads the first 2KB. Returns scope string or null.
- * At SubagentStart this usually fails (file doesn't exist yet) — kept
- * as future-proofing in case Claude Code changes the write order.
- */
-function extractScopeFromTranscript(transcriptPath, agentId) {
-  if (!transcriptPath || !agentId) return null;
-  const subagentPath = transcriptPath.replace(/\.jsonl$/, "")
-    + "/subagents/agent-" + agentId + ".jsonl";
-  try {
-    const fd = fs.openSync(subagentPath, "r");
-    const buf = Buffer.alloc(2048);
-    const bytesRead = fs.readSync(fd, buf, 0, 2048, 0);
-    fs.closeSync(fd);
-    const match = buf.toString("utf-8", 0, bytesRead).match(/scope=([A-Za-z0-9_-]+)/);
-    return match ? match[1] : null;
-  } catch {}
-  return null;
-}
+const { getDb, getPending, getActiveGate, getFixGate } = require("./claude-gates-db.js");
 
 try {
   const data = JSON.parse(fs.readFileSync(0, "utf-8"));
@@ -51,41 +25,20 @@ try {
 
   const sessionId = data.session_id || "";
   const agentType = data.agent_type || "";
-  const agentId = data.agent_id || "";
-  const bareAgentType = agentType.includes(":") ? agentType.split(":").pop() : agentType;
 
   if (!sessionId || !agentType) process.exit(0);
 
+  const bareAgentType = agentType.includes(":") ? agentType.split(":").pop() : agentType;
   const sessionDir = path.join(HOME, ".claude", "sessions", sessionId).replace(/\\/g, "/");
 
-  // Try transcript first (usually fails at SubagentStart — file doesn't exist yet)
-  let scope = extractScopeFromTranscript(data.transcript_path, agentId);
-  let outputFilepath = "";
+  // Best-effort gate context enrichment via DB.
+  // Not required for path correctness — agent derives its own path.
   let gateContext = "";
-
   const db = getDb(sessionDir);
   try {
-    // If transcript resolved scope, look up the registered entry
-    if (scope) {
-      const agentRow = getAgent(db, scope, bareAgentType);
-      if (agentRow && agentRow.outputFilepath) {
-        outputFilepath = agentRow.outputFilepath;
-      }
-    }
-
-    // Fallback: DB lookup via getPending.
-    // This is the primary path at SubagentStart (transcript doesn't exist).
-    // For parallel same-type agents, may return wrong scope — SubagentStop corrects.
-    if (!outputFilepath) {
-      const pending = getPending(db, bareAgentType);
-      if (pending && pending.outputFilepath) {
-        scope = pending.scope;
-        outputFilepath = pending.outputFilepath;
-      }
-    }
-
-    // Gate context: enhance for gate agents and fixer agents
-    if (scope && outputFilepath) {
+    const pending = getPending(db, bareAgentType);
+    if (pending && pending.scope) {
+      const scope = pending.scope;
       const activeGate = getActiveGate(db, scope);
       if (activeGate && activeGate.gate_agent === bareAgentType) {
         const sourceArtifact = path.join(
@@ -114,18 +67,18 @@ try {
     db.close();
   }
 
-  let context;
-  if (outputFilepath) {
-    context =
-      `<agent_gate importance="critical">\n` +
-      `output_filepath=${outputFilepath}\n` +
-      gateContext +
-      `Write your artifact to this exact path. Last line must be: Result: PASS or Result: FAIL\n` +
-      `</agent_gate>`;
-  } else {
-    // Ungated agent — inject session_dir for backward compatibility
-    context = `<agent_gate>session_dir=${sessionDir}</agent_gate>`;
-  }
+  // Inject pattern — agent derives output_filepath from its own scope= and type.
+  // No explicit path = no wrong-scope writes = no parallel collision.
+  const context =
+    `<agent_gate importance="critical">\n` +
+    `session_dir=${sessionDir}\n` +
+    gateContext +
+    `Write your artifact to: {session_dir}/{scope}/{agent_type}.md\n` +
+    `  - scope: extract from your prompt (scope=<name>)\n` +
+    `  - agent_type: your agent name\n` +
+    `  - Create the directory if needed\n` +
+    `Last line must be: Result: PASS or Result: FAIL\n` +
+    `</agent_gate>`;
 
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {

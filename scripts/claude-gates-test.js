@@ -409,12 +409,14 @@ const injResult = runInjection({
 if (injResult.stdout.trim()) {
   const injOutput = JSON.parse(injResult.stdout);
   const ctx = injOutput.hookSpecificOutput && injOutput.hookSpecificOutput.additionalContext;
-  assert(ctx && ctx.includes("output_filepath="), "injects output_filepath");
+  assert(ctx && ctx.includes("session_dir="), "injects session_dir");
   assert(ctx && ctx.includes('<agent_gate importance="critical">'), "wraps in <agent_gate importance=\"critical\">");
+  assert(ctx && ctx.includes("{session_dir}/{scope}/{agent_type}.md"), "includes path pattern");
   assert(ctx && ctx.includes("Result: PASS or Result: FAIL"), "includes Result: format instruction");
 } else {
-  assert(false, "injects output_filepath (no output)");
+  assert(false, "injects session_dir (no output)");
   assert(false, 'wraps in <agent_gate importance="critical"> (no output)');
+  assert(false, "includes path pattern (no output)");
   assert(false, "includes Result: format instruction (no output)");
 }
 
@@ -435,10 +437,10 @@ if (ungatedResult.stdout.trim()) {
   const ungatedOutput = JSON.parse(ungatedResult.stdout);
   const ungatedCtx = ungatedOutput.hookSpecificOutput && ungatedOutput.hookSpecificOutput.additionalContext;
   assert(ungatedCtx && ungatedCtx.includes("session_dir="), "ungated agent gets session_dir");
-  assert(ungatedCtx && !ungatedCtx.includes('importance="critical"'), "ungated agent gets plain <agent_gate>");
+  assert(ungatedCtx && ungatedCtx.includes('importance="critical"'), "ungated agent gets <agent_gate importance=critical>");
 } else {
   assert(false, "ungated agent gets session_dir (no output)");
-  assert(false, "ungated agent gets plain <agent_gate> (no output)");
+  assert(false, "ungated agent gets <agent_gate importance=critical> (no output)");
 }
 
 // ── Transcript-based scope resolution (parallel-safe) ──
@@ -486,15 +488,16 @@ if (ungatedResult.stdout.trim()) {
   if (resultA.stdout.trim() && resultB.stdout.trim()) {
     const ctxA = JSON.parse(resultA.stdout).hookSpecificOutput.additionalContext;
     const ctxB = JSON.parse(resultB.stdout).hookSpecificOutput.additionalContext;
-    assert(ctxA.includes("scope-a/gt-worker.md"), "parallel: agent-a resolves to scope-a");
-    assert(ctxB.includes("scope-b/gt-worker.md"), "parallel: agent-b resolves to scope-b");
-    assert(!ctxA.includes("scope-b"), "parallel: agent-a does NOT contain scope-b");
-    assert(!ctxB.includes("scope-a"), "parallel: agent-b does NOT contain scope-a");
+    // Injection gives pattern, not explicit path — both get same session_dir + pattern
+    assert(ctxA.includes("session_dir="), "parallel: agent-a gets session_dir");
+    assert(ctxB.includes("session_dir="), "parallel: agent-b gets session_dir");
+    assert(ctxA.includes("{session_dir}/{scope}/{agent_type}.md"), "parallel: agent-a gets path pattern");
+    assert(ctxB.includes("{session_dir}/{scope}/{agent_type}.md"), "parallel: agent-b gets path pattern");
   } else {
-    assert(false, "parallel: agent-a resolves to scope-a (no output)");
-    assert(false, "parallel: agent-b resolves to scope-b (no output)");
-    assert(false, "parallel: no cross-contamination A");
-    assert(false, "parallel: no cross-contamination B");
+    assert(false, "parallel: agent-a gets session_dir (no output)");
+    assert(false, "parallel: agent-b gets session_dir (no output)");
+    assert(false, "parallel: agent-a gets path pattern (no output)");
+    assert(false, "parallel: agent-b gets path pattern (no output)");
   }
 
   // Test: no transcript_path → falls back to getPending (DB lookup)
@@ -504,9 +507,9 @@ if (ungatedResult.stdout.trim()) {
   }, { USERPROFILE: tmpParallel, HOME: tmpParallel });
   if (noTranscript.stdout.trim()) {
     const noCtx = JSON.parse(noTranscript.stdout).hookSpecificOutput.additionalContext;
-    // getPending finds a registered gt-worker in the DB → injects output_filepath
-    assert(noCtx.includes("output_filepath=") || noCtx.includes("session_dir="),
-      "no transcript → falls back to getPending or ungated");
+    // All agents get session_dir + pattern (no explicit output_filepath)
+    assert(noCtx.includes("session_dir="),
+      "no transcript → gets session_dir + pattern");
   } else {
     assert(false, "no transcript → produces output");
   }
