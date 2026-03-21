@@ -18,7 +18,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const VERDICT_RE = /^Result:\s*(PASS|FAIL|REVISE|CONVERGED)/m;
+const VERDICT_RE = /^Result:\s*(PASS|FAIL|REVISE|CONVERGED)/mi;
 
 /**
  * Extract frontmatter block from markdown content.

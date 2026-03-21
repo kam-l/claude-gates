@@ -127,7 +127,12 @@ try {
       process.exit(0);
     }
 
-    // No scope match → fail-open (ungated usage)
+    // No scope match — if agent defines verification/gates, block.
+    // PreToolUse:Agent enforces scope= at spawn, so the subagent received
+    // output_filepath via injection and has all data needed to comply.
+    if (verification || agentGates) {
+      block(`Agent "${bareAgentType}" has verification/gates but no scope was found. Write your artifact to the output_filepath from <agent_gate> with a Result: PASS/FAIL line.`);
+    }
     process.exit(0);
   } finally {
     db.close();

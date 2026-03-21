@@ -208,6 +208,8 @@ assert(shared.VERDICT_RE.test("Result: REVISE"), "matches REVISE");
 assert(shared.VERDICT_RE.test("Result: CONVERGED"), "matches CONVERGED");
 assert(!shared.VERDICT_RE.test("no result here"), "rejects non-match");
 assert(shared.VERDICT_RE.test("line1\nResult: PASS\nline3"), "matches in multiline");
+assert(shared.VERDICT_RE.test("Result: pass"), "matches lowercase pass");
+assert(shared.VERDICT_RE.test("Result: Fail reason"), "matches mixed-case Fail");
 
 // ── Plugin wiring: hooks.json ───────────────────────────────────────
 
