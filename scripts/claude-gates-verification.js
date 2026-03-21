@@ -6,9 +6,21 @@
  *   Layer 1 (deterministic): file exists, Result: line present, scope registered
  *   Layer 2 (semantic): claude -p judges whether content is substantive
  *
+ * Scope resolution (parallel-safe):
+ *   Primary: agent_transcript_path (subagent's own JSONL, first line has scope=)
+ *   Fallback: extractArtifactPath (parse scope from last_assistant_message)
+ *   Fallback: findClearedScope (DB lookup)
+ *
+ * If injection gave wrong scope (parallel race in getPending), SubagentStop
+ * detects the mismatch via transcript and moves the artifact to the correct
+ * scope directory before verifying.
+ *
  * Verdict recording:
  *   After verification, records structured verdict objects to SQLite
  *   with round tracking.
+ *
+ * NOTE: hook stderr goes to subagent transcripts
+ * (~/.claude/projects/.../subagents/agent-{id}.jsonl), not terminal.
  *
  * Fail-open on infrastructure errors. Hard-block on intentional gates.
  */
@@ -21,6 +33,23 @@ const gatesDb = require("./claude-gates-db.js");
 
 const PROJECT_ROOT = process.cwd();
 const HOME = process.env.USERPROFILE || process.env.HOME || "";
+
+/**
+ * Extract scope= from a transcript JSONL file (first 2KB).
+ * The first line is the user message (spawn prompt) containing scope=.
+ */
+function extractScopeFromTranscript(transcriptPath) {
+  if (!transcriptPath) return null;
+  try {
+    const fd = fs.openSync(transcriptPath, "r");
+    const buf = Buffer.alloc(2048);
+    const bytesRead = fs.readSync(fd, buf, 0, 2048, 0);
+    fs.closeSync(fd);
+    const match = buf.toString("utf-8", 0, bytesRead).match(/scope=([A-Za-z0-9_-]+)/);
+    return match ? match[1] : null;
+  } catch {}
+  return null;
+}
 
 try {
   let data;
@@ -39,8 +68,9 @@ try {
 
   // Hardcoded gater fallback: record verdict from message when no artifact found.
   // The gater agent definition lives in the plugin's agents/ dir (not .claude/agents/),
-  // so findAgentMd won't find it. Extract verdict directly from last_assistant_message
-  // and write to session_scopes — plan-gate reads these to allow ExitPlanMode.
+  // so findAgentMd won't find it. Extract verdict directly from last_assistant_message.
+  // NOTE: gaters use hardcoded "gater-review" scope — they don't participate in pipeline
+  // scoping. This block must stay ABOVE the transcript scope resolution.
   if (bareAgentType === "gater" && lastMessage) {
     const gaterVerdict = VERDICT_RE.exec(lastMessage);
     if (gaterVerdict) {
@@ -66,9 +96,15 @@ try {
   if (!verification && !agentGates) {
     const db0 = gatesDb.getDb(sessionDir);
     try {
-      // Try to extract scope from message for parallel-safe lookups
+      // Try transcript first for parallel-safe scope, then extractArtifactPath
+      const transcriptScope0 = extractScopeFromTranscript(data.agent_transcript_path)
+        || extractScopeFromTranscript(
+          data.transcript_path && agentId !== "unknown"
+            ? data.transcript_path.replace(/\.jsonl$/, "") + "/subagents/agent-" + agentId + ".jsonl"
+            : null
+        );
       const artifactInfo0 = extractArtifactPath(lastMessage, sessionDir, agentType);
-      const targetScope0 = artifactInfo0 ? artifactInfo0.scope : null;
+      const targetScope0 = transcriptScope0 || (artifactInfo0 ? artifactInfo0.scope : null);
 
       // Check if this agent is a fixer completing for a gate in 'fix' status
       const fixRow = targetScope0
@@ -94,25 +130,79 @@ try {
     process.exit(0);
   }
 
+  // ── Authoritative scope resolution via subagent transcript ──────────
+  // agent_transcript_path = subagent's own JSONL (exists at SubagentStop).
+  // First line is the spawn prompt containing scope=<name>.
+  // Parallel-safe: each agent_id has its own transcript with correct scope.
+  // Falls back to deriving the path from transcript_path + agent_id.
+  const transcriptScope = extractScopeFromTranscript(data.agent_transcript_path)
+    || extractScopeFromTranscript(
+      data.transcript_path && agentId !== "unknown"
+        ? data.transcript_path.replace(/\.jsonl$/, "") + "/subagents/agent-" + agentId + ".jsonl"
+        : null
+    );
 
   const db = gatesDb.getDb(sessionDir);
 
   try {
-    // ── Locate artifact ──
-    // Path 1: new schema — extract from last message
+    // ── Transcript-resolved scope: check artifact at correct path ──
+    if (transcriptScope) {
+      const correctPath = path.join(sessionDir, transcriptScope, `${bareAgentType}.md`);
+
+      // Artifact already at correct path → proceed with verification
+      if (fs.existsSync(correctPath)) {
+        if (verification) {
+          runVerification(correctPath, transcriptScope, verification, sessionDir, agentType, agentId, mdContent, db);
+        } else {
+          runGatesOnlyCheck({ artifactPath: correctPath, scope: transcriptScope }, sessionDir, agentType, mdContent, db);
+        }
+        process.exit(0);
+      }
+
+      // Artifact NOT at correct path — check if injection gave wrong scope (parallel race)
+      const wrongArtifact = extractArtifactPath(lastMessage, sessionDir, agentType);
+      if (wrongArtifact && wrongArtifact.scope !== transcriptScope && fs.existsSync(wrongArtifact.artifactPath)) {
+        // Move artifact from wrong scope to correct scope
+        const correctDir = path.dirname(correctPath);
+        if (!fs.existsSync(correctDir)) fs.mkdirSync(correctDir, { recursive: true });
+        try {
+          fs.copyFileSync(wrongArtifact.artifactPath, correctPath);
+          fs.unlinkSync(wrongArtifact.artifactPath);
+        } catch {} // if move fails, fall through to block
+      }
+
+      // Check again after potential move
+      if (fs.existsSync(correctPath)) {
+        if (verification) {
+          runVerification(correctPath, transcriptScope, verification, sessionDir, agentType, agentId, mdContent, db);
+        } else {
+          runGatesOnlyCheck({ artifactPath: correctPath, scope: transcriptScope }, sessionDir, agentType, mdContent, db);
+        }
+        process.exit(0);
+      }
+
+      // Artifact still missing — block until agent writes to correct path
+      const scopeDir = path.join(sessionDir, transcriptScope);
+      if (!fs.existsSync(scopeDir)) fs.mkdirSync(scopeDir, { recursive: true });
+      block(`Write your artifact to ${sessionDir.replace(/\\/g, "/")}/${transcriptScope}/${bareAgentType}.md before stopping. Include a Result: PASS or Result: FAIL line.`);
+      process.exit(0);
+    }
+
+    // ── Fallback: no transcript scope (ungated or transcript missing) ──
+
+    // Path 1: extract scope from last_assistant_message
     const artifactInfo = extractArtifactPath(lastMessage, sessionDir, agentType);
 
     if (artifactInfo) {
       if (verification) {
         validateScopeAndVerify(artifactInfo, verification, sessionDir, agentType, agentId, mdContent, db);
       } else {
-        // Gates-only: structural check + gate transitions, no semantic verification
         runGatesOnlyCheck(artifactInfo, sessionDir, agentType, mdContent, db);
       }
       process.exit(0);
     }
 
-    // Path 2: scope lookup — agent was cleared but path not in message
+    // Path 2: scope lookup from DB
     const clearedScope = findClearedScope(sessionDir, agentType, db);
     if (clearedScope) {
       const expectedPath = path.join(sessionDir, clearedScope, `${agentType}.md`);
@@ -132,8 +222,6 @@ try {
     }
 
     // No scope match — if agent defines verification/gates, block.
-    // PreToolUse:Agent enforces scope= at spawn, so the subagent received
-    // output_filepath via injection and has all data needed to comply.
     if (verification || agentGates) {
       block(`Agent "${bareAgentType}" has verification/gates but no scope was found. Write your artifact to the output_filepath from <agent_gate> with a Result: PASS/FAIL line.`);
     }
@@ -464,9 +552,6 @@ function processGateTransitions(db, scope, agentType, finalVerdict, mdContent) {
   }
 }
 
-/**
- * Output a block decision.
- */
 /**
  * Extract verdict from a message string using VERDICT_RE.
  */

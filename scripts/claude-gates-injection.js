@@ -3,8 +3,17 @@
  * ClaudeGates v2 — SubagentStart injection hook.
  *
  * Injects output_filepath into agent context so the agent knows exactly
- * where to write its artifact. Resolves scope from the subagent's transcript
- * (first line contains the spawn prompt with scope=<name>).
+ * where to write its artifact.
+ *
+ * Scope resolution at SubagentStart: best-effort via DB (getPending).
+ *
+ * WHY NOT TRANSCRIPT: The subagent's JSONL doesn't exist yet at
+ * SubagentStart — Claude Code writes the first line AFTER this hook.
+ * For parallel same-type agents, getPending may return wrong scope.
+ * This is acceptable: SubagentStop reads agent_transcript_path
+ * (which DOES exist by then) and blocks until the artifact is at
+ * the correct path. See claude-gates-verification.js for the
+ * authoritative scope resolver.
  *
  * For gate agents, enhances context with source agent info.
  *
@@ -13,17 +22,16 @@
 
 const fs = require("fs");
 const path = require("path");
-const { getDb, getAgent, getActiveGate, getFixGate } = require("./claude-gates-db.js");
+const { getDb, getAgent, getPending, getActiveGate, getFixGate } = require("./claude-gates-db.js");
 
 /**
- * Extract scope= from the subagent's own transcript JSONL.
- * Derives the subagent transcript path from the parent's transcript_path + agent_id.
- * The first line is always the user message (spawn prompt) containing scope=.
- * Reads only the first 2KB — no performance concern.
+ * Extract scope= from a transcript JSONL file.
+ * Reads the first 2KB. Returns scope string or null.
+ * At SubagentStart this usually fails (file doesn't exist yet) — kept
+ * as future-proofing in case Claude Code changes the write order.
  */
 function extractScopeFromTranscript(transcriptPath, agentId) {
   if (!transcriptPath || !agentId) return null;
-  // Derive subagent transcript: {parent_dir}/{session}/subagents/agent-{id}.jsonl
   const subagentPath = transcriptPath.replace(/\.jsonl$/, "")
     + "/subagents/agent-" + agentId + ".jsonl";
   try {
@@ -44,29 +52,42 @@ try {
   const sessionId = data.session_id || "";
   const agentType = data.agent_type || "";
   const agentId = data.agent_id || "";
+  const bareAgentType = agentType.includes(":") ? agentType.split(":").pop() : agentType;
 
   if (!sessionId || !agentType) process.exit(0);
 
   const sessionDir = path.join(HOME, ".claude", "sessions", sessionId).replace(/\\/g, "/");
 
-  // Resolve scope from subagent transcript (order-independent, parallel-safe)
+  // Try transcript first (usually fails at SubagentStart — file doesn't exist yet)
   let scope = extractScopeFromTranscript(data.transcript_path, agentId);
   let outputFilepath = "";
   let gateContext = "";
 
   const db = getDb(sessionDir);
   try {
+    // If transcript resolved scope, look up the registered entry
     if (scope) {
-      const agentRow = getAgent(db, scope, agentType);
+      const agentRow = getAgent(db, scope, bareAgentType);
       if (agentRow && agentRow.outputFilepath) {
         outputFilepath = agentRow.outputFilepath;
+      }
+    }
+
+    // Fallback: DB lookup via getPending.
+    // This is the primary path at SubagentStart (transcript doesn't exist).
+    // For parallel same-type agents, may return wrong scope — SubagentStop corrects.
+    if (!outputFilepath) {
+      const pending = getPending(db, bareAgentType);
+      if (pending && pending.outputFilepath) {
+        scope = pending.scope;
+        outputFilepath = pending.outputFilepath;
       }
     }
 
     // Gate context: enhance for gate agents and fixer agents
     if (scope && outputFilepath) {
       const activeGate = getActiveGate(db, scope);
-      if (activeGate && activeGate.gate_agent === agentType) {
+      if (activeGate && activeGate.gate_agent === bareAgentType) {
         const sourceArtifact = path.join(
           sessionDir, scope, `${activeGate.source_agent}.md`
         ).replace(/\\/g, "/");
@@ -77,7 +98,7 @@ try {
           `gate_round=${activeGate.round}/${activeGate.max_rounds}\n`;
       }
       const fixGateRow = getFixGate(db, scope);
-      if (fixGateRow && fixGateRow.fixer_agent === agentType) {
+      if (fixGateRow && fixGateRow.fixer_agent === bareAgentType) {
         const sourceArtifact = path.join(
           sessionDir, scope, `${fixGateRow.source_agent}.md`
         ).replace(/\\/g, "/");

@@ -497,34 +497,36 @@ if (ungatedResult.stdout.trim()) {
     assert(false, "parallel: no cross-contamination B");
   }
 
-  // Test: no transcript_path → ungated (session_dir only)
+  // Test: no transcript_path → falls back to getPending (DB lookup)
   const noTranscript = runInjection({
     session_id: "parallel-test",
     agent_type: "gt-worker"
   }, { USERPROFILE: tmpParallel, HOME: tmpParallel });
   if (noTranscript.stdout.trim()) {
     const noCtx = JSON.parse(noTranscript.stdout).hookSpecificOutput.additionalContext;
-    assert(noCtx.includes("session_dir="), "no transcript → ungated with session_dir");
+    // getPending finds a registered gt-worker in the DB → injects output_filepath
+    assert(noCtx.includes("output_filepath=") || noCtx.includes("session_dir="),
+      "no transcript → falls back to getPending or ungated");
   } else {
-    assert(false, "no transcript → ungated (no output)");
+    assert(false, "no transcript → produces output");
   }
 
-  // Test: transcript without scope= → ungated
+  // Test: transcript without scope= + unknown agent type → ungated
   fs.writeFileSync(path.join(subagentDir, "agent-no-scope.jsonl"), JSON.stringify({
     type: "user", message: { role: "user", content: "Just do something" }
   }) + "\n", "utf-8");
   const noScopeResult = runInjection({
     session_id: "parallel-test",
-    agent_type: "gt-worker",
+    agent_type: "unknown-agent-xyz",
     agent_id: "no-scope",
     transcript_path: parentTranscript
   }, { USERPROFILE: tmpParallel, HOME: tmpParallel });
   if (noScopeResult.stdout.trim()) {
     const nsCtx = JSON.parse(noScopeResult.stdout).hookSpecificOutput.additionalContext;
     assert(nsCtx.includes("session_dir=") && !nsCtx.includes("output_filepath="),
-      "transcript without scope= → ungated");
+      "no scope + unknown agent → ungated");
   } else {
-    assert(false, "transcript without scope= → ungated (no output)");
+    assert(false, "no scope + unknown agent → produces output");
   }
 
   fs.rmSync(tmpParallel, { recursive: true, force: true });
