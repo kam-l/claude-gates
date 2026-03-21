@@ -238,7 +238,7 @@ Missing fields use defaults. No config file = built-in defaults. All gates work 
 ## Testing
 
 ```bash
-node scripts/claude-gates-test.js    # 287 passed, 0 failed
+node scripts/claude-gates-test.js
 ```
 
 ## License
