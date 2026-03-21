@@ -17,13 +17,17 @@ const { getDb, getAgent, getActiveGate, getFixGate } = require("./claude-gates-d
 
 /**
  * Extract scope= from the subagent's own transcript JSONL.
+ * Derives the subagent transcript path from the parent's transcript_path + agent_id.
  * The first line is always the user message (spawn prompt) containing scope=.
  * Reads only the first 2KB — no performance concern.
  */
-function extractScopeFromTranscript(transcriptPath) {
-  if (!transcriptPath) return null;
+function extractScopeFromTranscript(transcriptPath, agentId) {
+  if (!transcriptPath || !agentId) return null;
+  // Derive subagent transcript: {parent_dir}/{session}/subagents/agent-{id}.jsonl
+  const subagentPath = transcriptPath.replace(/\.jsonl$/, "")
+    + "/subagents/agent-" + agentId + ".jsonl";
   try {
-    const fd = fs.openSync(transcriptPath, "r");
+    const fd = fs.openSync(subagentPath, "r");
     const buf = Buffer.alloc(2048);
     const bytesRead = fs.readSync(fd, buf, 0, 2048, 0);
     fs.closeSync(fd);
@@ -39,13 +43,14 @@ try {
 
   const sessionId = data.session_id || "";
   const agentType = data.agent_type || "";
+  const agentId = data.agent_id || "";
 
   if (!sessionId || !agentType) process.exit(0);
 
   const sessionDir = path.join(HOME, ".claude", "sessions", sessionId).replace(/\\/g, "/");
 
-  // Resolve scope from transcript (order-independent, parallel-safe)
-  let scope = extractScopeFromTranscript(data.transcript_path);
+  // Resolve scope from subagent transcript (order-independent, parallel-safe)
+  let scope = extractScopeFromTranscript(data.transcript_path, agentId);
   let outputFilepath = "";
   let gateContext = "";
 
