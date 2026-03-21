@@ -38,7 +38,9 @@ claude plugin marketplace add kam-l/claude-gates
 claude plugin install claude-gates
 ```
 
-Then run `/claude-gates:setup` — it checks dependencies, detects your stack, and walks you through every gate interactively. Or just point Claude at the [setup skill](skills/setup/SKILL.md) and ask.
+Then run `/claude-gates:setup` — it checks dependencies, detects your stack, and walks you through every gate interactively.
+
+Or just tell Claude to: `Read https://github.com/kam-l/claude-gates and install it.`
 
 ## Gate Lifecycle
 
