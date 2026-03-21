@@ -102,7 +102,7 @@ try {
     try {
       const condPrompt = conditions + "\n\nAgent spawn prompt:\n" + prompt;
       const condResult = execSync(
-        "claude -p --model sonnet --agent claude-gates:gater --max-turns 1",
+        "claude -p --model sonnet --agent claude-gates:gater --max-turns 1 --tools \"\"",
         {
           input: condPrompt,
           cwd: PROJECT_ROOT,

@@ -2180,6 +2180,64 @@ if (gblockDb) {
   assert(fixRead.exitCode === 0 && !fixRead.stdout.includes("block"),
     "fix gate + Read → allowed");
 
+  // ── Parallel scopes: two active gates in different scopes ──
+
+  // Add a second scope with its own active gate
+  gatesDb.initGates(gblockDb, "task-parallel", "worker-b", [
+    { agent: "checker", maxRounds: 2 }
+  ]);
+
+  // Spawn checker (task-parallel) → allowed (matches task-parallel expected agent)
+  const parallelChecker = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Agent",
+    tool_input: { subagent_type: "checker", prompt: "check scope=task-parallel" }
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(parallelChecker.exitCode === 0 && !parallelChecker.stdout.includes("block"),
+    "parallel: spawn checker for task-parallel → allowed");
+
+  // Spawn patcher (task-fix) → allowed (matches task-fix expected agent)
+  const parallelPatcher = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Agent",
+    tool_input: { subagent_type: "patcher", prompt: "fix scope=task-fix" }
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(parallelPatcher.exitCode === 0 && !parallelPatcher.stdout.includes("block"),
+    "parallel: spawn patcher for task-fix → allowed");
+
+  // Spawn unrelated agent → blocked (no scope expects it)
+  const parallelWrong = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Agent",
+    tool_input: { subagent_type: "random-agent", prompt: "do stuff" }
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(parallelWrong.stdout.includes("block"),
+    "parallel: spawn unrelated agent → blocked");
+
+  // Block message lists both pending scopes
+  assert(parallelWrong.stdout.includes("task-fix") || parallelWrong.stdout.includes("task-parallel"),
+    "parallel: block message lists pending scopes");
+
+  // agent_type from checker subagent → allowed
+  const parallelSelfCheck = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Write",
+    tool_input: { file_path: "/tmp/artifact.md" },
+    agent_type: "checker"
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(parallelSelfCheck.exitCode === 0 && !parallelSelfCheck.stdout.includes("block"),
+    "parallel: checker agent_type Write → allowed");
+
+  // agent_type from patcher subagent → allowed
+  const parallelSelfPatch = runGateBlock({
+    session_id: "gblock-test",
+    tool_name: "Bash",
+    tool_input: { command: "echo fix" },
+    agent_type: "patcher"
+  }, { USERPROFILE: tmpGateBlock, HOME: tmpGateBlock });
+  assert(parallelSelfPatch.exitCode === 0 && !parallelSelfPatch.stdout.includes("block"),
+    "parallel: patcher agent_type Bash → allowed");
+
   gblockDb.close();
 } else {
   console.log("  SKIP: gate-block tests — better-sqlite3 not available");

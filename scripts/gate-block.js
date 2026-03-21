@@ -2,12 +2,14 @@
 /**
  * ClaudeGates v2 — PreToolUse gate blocker (no matcher = all tools).
  *
- * When a gate is active, blocks ALL tools except:
- *   - Tool calls from the expected agent itself (detected via agent_type)
+ * When gates are active, blocks ALL tools except:
+ *   - Tool calls from an expected agent itself (detected via agent_type)
  *   - Read-only tools (Read, Glob, Grep)
- *   - Spawning the correct agent (gate agent when active, source agent when revise, fixer when fix)
+ *   - Spawning an agent that matches ANY open scope's expected agent
  *
- * Prevents the orchestrator from bypassing gates by using Bash, Edit, MCP tools, etc.
+ * Scope-aware: supports parallel pipelines. Each scope tracks its own
+ * gate chain independently. The orchestrator can spawn agents for any
+ * scope that needs one.
  *
  * Fail-open: no session / no DB / no active gate → allow.
  */
@@ -34,40 +36,46 @@ try {
   const db = getDb(sessionDir);
   if (!db) process.exit(0);
 
-  // Check for any active, revise, or fix gate across all scopes
-  const gate = db.prepare(
-    "SELECT scope, gate_agent, source_agent, fixer_agent, status FROM gates WHERE status IN ('active','revise','fix') LIMIT 1"
-  ).get();
+  // Get ALL active gates across all scopes (parallel-aware)
+  const gates = db.prepare(
+    "SELECT scope, gate_agent, source_agent, fixer_agent, status FROM gates WHERE status IN ('active','revise','fix')"
+  ).all();
 
   db.close();
 
-  if (!gate) process.exit(0);
+  if (gates.length === 0) process.exit(0);
 
-  const expectedAgent = gate.status === "fix" ? gate.fixer_agent
-    : gate.status === "revise" ? gate.source_agent
-    : gate.gate_agent;
+  // Build set of expected agents across all open scopes
+  const expectedAgents = new Map(); // agent_type → { scope, status }
+  for (const g of gates) {
+    const expected = g.status === "fix" ? g.fixer_agent
+      : g.status === "revise" ? g.source_agent
+      : g.gate_agent;
+    if (expected) expectedAgents.set(expected, { scope: g.scope, status: g.status });
+  }
 
-  // If the tool call is from the expected agent itself, allow it.
-  // PreToolUse provides agent_type when called from within a subagent.
-  if (callerAgent && (callerAgent === expectedAgent || callerAgent.endsWith(":" + expectedAgent))) {
-    process.exit(0);
+  // If the tool call is from any expected agent, allow it (subagent's own tools)
+  if (callerAgent) {
+    const bare = callerAgent.includes(":") ? callerAgent.split(":").pop() : callerAgent;
+    if (expectedAgents.has(bare)) process.exit(0);
   }
 
   // Read-only tools always allowed
   if (READ_ONLY_TOOLS.includes(toolName)) process.exit(0);
 
-  // Agent tool: allow spawning the correct agent
+  // Agent tool: allow spawning any expected agent across all scopes
   if (toolName === "Agent") {
     const subagentType = toolInput.subagent_type || "";
-    if (gate.status === "active" && subagentType === gate.gate_agent) process.exit(0);
-    if (gate.status === "revise" && subagentType === gate.source_agent) process.exit(0);
-    if (gate.status === "fix" && subagentType === gate.fixer_agent) process.exit(0);
+    if (expectedAgents.has(subagentType)) process.exit(0);
   }
 
-  // Block everything else
+  // Block everything else — list all pending scopes in message
+  const pending = [...expectedAgents.entries()]
+    .map(([agent, info]) => `\`${agent}\` (scope=${info.scope})`)
+    .join(", ");
   process.stdout.write(JSON.stringify({
     decision: "block",
-    reason: `[ClaudeGates] Spawn a \`${expectedAgent}\` subagent with scope=${gate.scope}.`
+    reason: `[ClaudeGates] Spawn: ${pending}.`
   }));
   process.exit(0);
 } catch {
