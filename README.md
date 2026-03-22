@@ -24,12 +24,12 @@ claude-gates moves quality control from "please do this" to "you literally canno
 
 ## How It Works
 
-- **Hook-level enforcement** — gates are Claude Code hooks (`PreToolUse`, `SubagentStop`, `Stop`), not prompt instructions. They block tool calls via exit codes, not suggestions.
+- **Hook-level enforcement** — gates are Claude Code hooks (`PreToolUse`, `PostToolUse`, `SubagentStart`, `SubagentStop`, `Stop`, `StopFailure`), not prompt instructions. They block tool calls via exit codes, not suggestions.
 - **SQLite-backed state** — all gate state (verdicts, rounds, scopes, edits) lives in a per-session `session.db` via `better-sqlite3`. Atomic transactions, no file-locking races.
 - **Scope-based isolation** — each pipeline gets a `scope=<name>`. Parallel pipelines (same session, different scopes) run independently with no cross-talk.
 - **Artifact-based** — each agent gets an `output_filepath` injected at spawn. Gates verify the artifact file, not conversation state. Artifacts persist on disk, survive compaction, and are readable by downstream agents.
 - **Fail-open** — every gate catches errors and exits 0. If SQLite fails, if a script throws, if `claude -p` is unavailable — your work continues unblocked.
-- **Dependency: `better-sqlite3`** — native Node module, required. `npm install` in the plugin directory after install.
+- **Dependency: `better-sqlite3`** — native Node module, auto-installed on first session via `SessionStart` hook into `CLAUDE_PLUGIN_DATA` (persists across plugin updates).
 
 ## Install
 
@@ -68,7 +68,7 @@ All gates are **fail-open** — if something breaks, your work continues unblock
 | **Plan** | `PreToolUse:ExitPlanMode` | Blocks unreviewed plans (>20 lines) until gater returns PASS. Auto-allows after 3 attempts |
 | **Commit** | `PreToolUse:Bash` | Runs configured commands before `git commit`. Disabled by default |
 | **Edit** | `PostToolUse:Edit\|Write` | Tracks edited files, runs opt-in formatters (deduped per file). Non-blocking |
-| **Stop** | `Stop` | Scans edited files for debug patterns (`TODO`, `console.log`). Nudges uncommitted changes |
+| **Stop** | `Stop` + `StopFailure` | Scans edited files for debug patterns (`TODO`, `console.log`). Nudges uncommitted changes. On API errors, resets orphaned gates for recovery |
 
 ### Agent frontmatter fields
 
