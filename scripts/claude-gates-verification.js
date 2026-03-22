@@ -428,20 +428,22 @@ function runSemanticCheck(prompt, artifactContent, artifactPath, contextContent,
     process.stderr.write(`[ClaudeGates] Verdict: ${finalVerdict}.\n`);
   }
 
-  // Only FAIL blocks; REVISE/CONVERGED/PASS/UNKNOWN allow
-  if (finalVerdict === "FAIL") {
-    const reason = semanticMatch && semanticMatch[2] ? semanticMatch[2].trim() : "Semantic validation failed";
-    block(`Your ${path.basename(artifactPath)} failed semantic validation: ${reason}. Rewrite it with substantive content.`);
-    return;
-  }
-
   // PASS/REVISE/CONVERGED/UNKNOWN → allow (orchestrator reads session_scopes.json for retry decisions)
   if (!verdictObj) {
     process.stderr.write(`[ClaudeGates] ${agentType}: ${lastLine}\n`);
   }
 
   // ── Gate state machine transitions ──
+  // Always run transitions — even on FAIL. SubagentStop may not support
+  // decision:block, so the agent completes regardless. Without transitions,
+  // FAIL leaves gate rows as 'active' permanently, blocking all subsequent work.
   processGateTransitions(db, scope, agentType, finalVerdict, mdContent);
+
+  // FAIL: attempt to block (may not work at SubagentStop, but try)
+  if (finalVerdict === "FAIL") {
+    const reason = semanticMatch && semanticMatch[2] ? semanticMatch[2].trim() : "Semantic validation failed";
+    block(`Your ${path.basename(artifactPath)} failed semantic validation: ${reason}. Rewrite it with substantive content.`);
+  }
 }
 
 /**
