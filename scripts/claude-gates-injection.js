@@ -18,7 +18,8 @@
 
 const fs = require("fs");
 const path = require("path");
-const { getDb, getPending, getActiveGate, getFixGate } = require("./claude-gates-db.js");
+const { getDb, getPending, getActiveGate, getFixGate, getGates, initGates } = require("./claude-gates-db.js");
+const { parseGates, findAgentMd } = require("./claude-gates-shared.js");
 
 try {
   const data = JSON.parse(fs.readFileSync(0, "utf-8"));
@@ -46,9 +47,35 @@ try {
     const pending = getPending(db, bareAgentType);
     if (pending && pending.scope) {
       const scope = pending.scope;
+
+      // Initialize gates at spawn time (not completion) so gates exist
+      // regardless of source verdict (PASS/FAIL/REVISE all need gates).
+      const existingGates = getGates(db, scope);
+      if (existingGates.length === 0) {
+        const agentMdPath = findAgentMd(bareAgentType, process.cwd());
+        if (agentMdPath) {
+          const mdContent = fs.readFileSync(agentMdPath, "utf-8");
+          const agentGates = parseGates(mdContent);
+          if (agentGates) {
+            initGates(db, scope, bareAgentType, agentGates);
+            process.stderr.write(
+              `[ClaudeGates] Initialized ${agentGates.length} gate(s) for scope "${scope}": ${agentGates.map(g => g.agent).join(" -> ")}.\n`
+            );
+          }
+        }
+      }
+
       const activeGate = getActiveGate(db, scope);
       if (activeGate && activeGate.gate_agent === bareAgentType) {
-        const sourceArtifact = `${sessionDir}/${scope}/${activeGate.source_agent}.md`;
+        // After fixer runs, reviewer should read fixer's output (latest version),
+        // not the original source artifact.
+        let sourceArtifact = `${sessionDir}/${scope}/${activeGate.source_agent}.md`;
+        if (activeGate.fixer_agent && activeGate.round > 0) {
+          const fixerArtifact = `${sessionDir}/${scope}/${activeGate.fixer_agent}.md`;
+          if (fs.existsSync(fixerArtifact)) {
+            sourceArtifact = fixerArtifact;
+          }
+        }
         gateContext =
           `role=gate\n` +
           `source_agent=${activeGate.source_agent}\n` +

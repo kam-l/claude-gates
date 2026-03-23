@@ -111,6 +111,18 @@ try {
         ? db0.prepare("SELECT scope FROM gates WHERE fixer_agent = ? AND status = 'fix' AND scope = ? LIMIT 1").get(bareAgentType, targetScope0)
         : db0.prepare("SELECT scope FROM gates WHERE fixer_agent = ? AND status = 'fix' LIMIT 1").get(bareAgentType);
       if (fixRow) {
+        // Move fixer artifact to canonical path so reviewer can read it
+        if (targetScope0 && agentId && agentId !== "unknown") {
+          const tempPath = path.join(sessionDir, `${agentId}.md`);
+          const canonPath = path.join(sessionDir, fixRow.scope, `${bareAgentType}.md`);
+          if (fs.existsSync(tempPath)) {
+            try {
+              fs.mkdirSync(path.dirname(canonPath), { recursive: true });
+              fs.copyFileSync(tempPath, canonPath);
+              fs.unlinkSync(tempPath);
+            } catch {}
+          }
+        }
         const finalVerdict = extractVerdict(lastMessage);
         processGateTransitions(db0, fixRow.scope, bareAgentType, finalVerdict, mdContent);
         process.exit(0);
@@ -162,17 +174,15 @@ try {
       const correctPath = path.join(sessionDir, transcriptScope, `${bareAgentType}.md`);
       const scopeDir = path.dirname(correctPath);
 
-      // If artifact already at canonical path (re-run or manual write), use it directly
-      if (!fs.existsSync(correctPath)) {
-        // Move from agent_id temp path to canonical scope path
-        const tempPath = path.join(sessionDir, `${agentId}.md`);
-        if (fs.existsSync(tempPath)) {
-          if (!fs.existsSync(scopeDir)) fs.mkdirSync(scopeDir, { recursive: true });
-          try {
-            fs.copyFileSync(tempPath, correctPath);
-            fs.unlinkSync(tempPath);
-          } catch {} // if move fails, fall through to block
-        }
+      // Move from agent_id temp path to canonical scope path.
+      // Always overwrite — on retries (FAIL/REVISE) the new artifact replaces the stale one.
+      const tempPath = path.join(sessionDir, `${agentId}.md`);
+      if (fs.existsSync(tempPath)) {
+        if (!fs.existsSync(scopeDir)) fs.mkdirSync(scopeDir, { recursive: true });
+        try {
+          fs.copyFileSync(tempPath, correctPath);
+          fs.unlinkSync(tempPath);
+        } catch {} // if move fails, fall through to block
       }
 
       if (fs.existsSync(correctPath)) {
@@ -352,7 +362,18 @@ function runVerification(artifactPath, scope, verification, sessionDir, agentTyp
 function runSemanticCheck(prompt, artifactContent, artifactPath, contextContent, agentType, agentId, sessionId, scope, sessionDir, mdContent, db) {
   const resolvedSessionDir = sessionDir || (sessionId ? path.join(HOME, ".claude", "sessions", sessionId) : null);
 
+  // Detect if this is a gate/fixer agent (their artifact is a review, not primary content)
+  const bareType = agentType.includes(":") ? agentType.split(":").pop() : agentType;
+  const isGateOrFixer = db && scope && db.prepare(
+    "SELECT 1 FROM gates WHERE (gate_agent = ? OR fixer_agent = ?) AND scope = ? LIMIT 1"
+  ).get(bareType, bareType, scope);
+
   let combinedPrompt = prompt + "\n\n";
+  if (isGateOrFixer) {
+    combinedPrompt += `NOTE: This artifact is a REVIEW or FIX of another artifact, not primary content. ` +
+      `Judge whether this review/fix is well-structured, specific, and actionable. ` +
+      `Negative findings about the SOURCE artifact are expected and correct — do not penalize the reviewer for identifying problems.\n\n`;
+  }
   combinedPrompt += `--- ${path.basename(artifactPath)} ---\n${artifactContent}\n`;
   if (contextContent) combinedPrompt += contextContent;
 
@@ -405,11 +426,10 @@ function runSemanticCheck(prompt, artifactContent, artifactPath, contextContent,
   }
 
   // ── Verdict precedence ──
-  // For source agents: semantic FAIL overrides artifact verdict (quality gate)
-  // For gate agents: artifact Result: line is authoritative (gate IS the authority)
-  //   Semantic FAIL on gate agents = advisory warning, not override.
-  //   Overriding creates unrecoverable deadlock: SubagentStop can't enforce blocks,
-  //   so agent completes, gate stays active, orchestrator moves on, pipeline freezes.
+  // Semantic FAIL overrides artifact verdict for ALL agents:
+  //   Source agents: FAIL → exit(2), gate-block forces resume
+  //   Gate agents: FAIL → REVISE (bad review = no review, gate agent must retry)
+  // FAIL→revise transition prevents the old deadlock where gate stayed 'active'.
 
   let finalVerdict = "UNKNOWN";
   const artifactVerdictMatch = VERDICT_RE.exec(artifactContent);
@@ -423,9 +443,28 @@ function runSemanticCheck(prompt, artifactContent, artifactPath, contextContent,
     // Source agent: semantic FAIL overrides
     finalVerdict = "FAIL";
   } else if (semanticMatch && semanticMatch[1].toUpperCase() === "FAIL" && isGateAgent) {
-    // Gate agent: log warning, use artifact verdict
-    process.stderr.write(`[ClaudeGates] Semantic check FAIL for gate agent ${agentType} (advisory only): ${semanticMatch[2] || "format issue"}\n`);
-    finalVerdict = artifactVerdictMatch ? artifactVerdictMatch[1].toUpperCase() : "UNKNOWN";
+    // Gate agent: bad review is no review — gate stays active, gate agent must retry.
+    // Increment round to prevent infinite retries; exhaust → failed.
+    const bare = agentType.includes(":") ? agentType.split(":").pop() : agentType;
+    const gateRow = db.prepare(
+      'SELECT "order", round, max_rounds FROM gates WHERE gate_agent = ? AND scope = ? AND status = \'active\' LIMIT 1'
+    ).get(bare, scope);
+    if (gateRow) {
+      const newRound = gateRow.round + 1;
+      if (newRound >= gateRow.max_rounds) {
+        db.prepare('UPDATE gates SET status = \'failed\', round = ? WHERE scope = ? AND "order" = ?')
+          .run(newRound, scope, gateRow.order);
+        process.stderr.write(`[ClaudeGates] Gate ${bare} semantic FAIL — exhausted ${gateRow.max_rounds} rounds. Scope "${scope}" gate chain FAILED.\n`);
+      } else {
+        db.prepare('UPDATE gates SET round = ? WHERE scope = ? AND "order" = ?')
+          .run(newRound, scope, gateRow.order);
+        process.stderr.write(`[ClaudeGates] Gate ${bare} semantic FAIL (bad review) — re-spawn ${bare} with scope=${scope} (round ${newRound}/${gateRow.max_rounds}).\n`);
+      }
+    }
+    // Record the FAIL verdict but skip processGateTransitions (handled above)
+    recordVerdict(resolvedSessionDir, scope, agentType, "FAIL", db);
+    process.stderr.write(`[ClaudeGates] Verdict: FAIL (semantic).\n`);
+    process.exit(2);
   } else {
     // Use artifact's own Result: line
     finalVerdict = artifactVerdictMatch ? artifactVerdictMatch[1].toUpperCase() : "UNKNOWN";
@@ -445,8 +484,8 @@ function runSemanticCheck(prompt, artifactContent, artifactPath, contextContent,
 
   // ── Gate state machine transitions ──
   // Always run transitions — even on FAIL. SubagentStop may not support
-  // decision:block, so the agent completes regardless. Without transitions,
-  // FAIL leaves gate rows as 'active' permanently, blocking all subsequent work.
+  // decision:block, so the agent completes regardless. Gate agent FAIL is
+  // treated as REVISE (routes to fixer or source agent for improvement).
   processGateTransitions(db, scope, agentType, finalVerdict, mdContent);
 
   // FAIL: exit 2 + stderr → orchestrator sees the reason and can re-spawn/resume.
@@ -517,9 +556,23 @@ function processGateTransitions(db, scope, agentType, finalVerdict, mdContent) {
         } else if (nextGate) {
           process.stderr.write(`[ClaudeGates] Gate ${activeGate.gate_agent} passed. Next gate: ${nextGate.gate_agent} (spawn with scope=${scope}).\n`);
         }
+      } else if (finalVerdict === "FAIL") {
+        // FAIL = *this* gate agent failed — stays active, re-run gate agent itself.
+        // Round increment + exhaustion handled by gate-agent semantic FAIL path above.
+        // If we reach here from artifact Result: FAIL (not semantic), bump round too.
+        const newRound = activeGate.round + 1;
+        if (newRound >= activeGate.max_rounds) {
+          db.prepare('UPDATE gates SET status = \'failed\', round = ? WHERE scope = ? AND "order" = ?')
+            .run(newRound, scope, activeGate.order);
+          process.stderr.write(`[ClaudeGates] Gate ${activeGate.gate_agent} FAIL — exhausted ${activeGate.max_rounds} rounds. Scope "${scope}" gate chain FAILED.\n`);
+        } else {
+          db.prepare('UPDATE gates SET round = ? WHERE scope = ? AND "order" = ?')
+            .run(newRound, scope, activeGate.order);
+          process.stderr.write(`[ClaudeGates] Gate ${activeGate.gate_agent} FAIL — re-spawn ${activeGate.gate_agent} with scope=${scope} (round ${newRound}/${activeGate.max_rounds}).\n`);
+        }
       } else if (finalVerdict === "REVISE") {
+        // REVISE = *reviewed* source agent failed — route to fixer or source
         if (activeGate.fixer_agent) {
-          // Fixer defined — route to fixer instead of source
           const result = gatesDb.fixGate(db, scope, activeGate.order);
           if (result && result.status === "failed") {
             process.stderr.write(`[ClaudeGates] Gate ${activeGate.gate_agent} exhausted rounds. Scope "${scope}" gate chain FAILED.\n`);
@@ -557,13 +610,13 @@ function processGateTransitions(db, scope, agentType, finalVerdict, mdContent) {
       }
     }
   } else {
-    // No gates in DB yet — check if this agent defines gates (first completion)
+    // Gates should already be initialized at SubagentStart (injection hook).
+    // Fallback: init here if injection didn't run (e.g. hook ordering race).
     const agentGates = parseGates(mdContent);
-    if (agentGates && (finalVerdict === "PASS" || finalVerdict === "CONVERGED")) {
+    if (agentGates && gatesDb.getGates(db, scope).length === 0) {
       gatesDb.initGates(db, scope, bare, agentGates);
       process.stderr.write(
-        `[ClaudeGates] Initialized ${agentGates.length} gate(s) for scope "${scope}": ${agentGates.map(g => g.agent).join(" -> ")}. ` +
-        `Next: spawn ${agentGates[0].agent} with scope=${scope}.\n`
+        `[ClaudeGates] Initialized ${agentGates.length} gate(s) for scope "${scope}" (fallback). Next: spawn ${agentGates[0].agent} with scope=${scope}.\n`
       );
     }
   }

@@ -103,13 +103,13 @@ function parseGates(mdContent) {
 
 /**
  * Check whether agent definition requires a scope for gating.
- * Returns true if frontmatter contains gates: or conditions:.
+ * Returns true if frontmatter contains gates:, conditions:, or role: gate/fixer.
  * Note: verification: alone does NOT require scope (backward compatible).
  */
 function requiresScope(mdContent) {
   const fm = extractFrontmatter(mdContent);
   if (!fm) return false;
-  return /^(gates|conditions)\s*:/m.test(fm);
+  return /^(gates|conditions)\s*:/m.test(fm) || /^role\s*:\s*(gate|fixer)/m.test(fm);
 }
 
 /**
