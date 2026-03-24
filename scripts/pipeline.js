@@ -200,8 +200,9 @@ function advance(db, scope, activeStep) {
 function revise(db, scope, state, activeStep) {
   const newRound = activeStep.round + 1;
 
-  // Exhaustion check
-  if (newRound >= activeStep.max_rounds) {
+  // Exhaustion check: maxRounds = allowed revision cycles.
+  // Round 1/N, 2/N ... N/N are within bounds. N+1 > N → exhausted.
+  if (newRound > activeStep.max_rounds) {
     const txn = db.transaction(() => {
       crud.updateStepStatus(db, scope, activeStep.step_index, "failed", newRound);
       crud.updatePipelineState(db, scope, { status: "failed" });
@@ -253,7 +254,7 @@ function retryGateAgent(db, scope) {
 
   const newRound = activeStep.round + 1;
 
-  if (newRound >= activeStep.max_rounds) {
+  if (newRound > activeStep.max_rounds) {
     const txn = db.transaction(() => {
       crud.updateStepStatus(db, scope, activeStep.step_index, "failed", newRound);
       crud.updatePipelineState(db, scope, { status: "failed" });

@@ -81,7 +81,7 @@ try {
             `role=gate\n` +
             `source_agent=${sourceAgent}\n` +
             `source_artifact=${sourceArtifact}\n` +
-            `gate_round=${activeStep.round}/${activeStep.max_rounds}\n`;
+            `gate_round=${activeStep.round + 1}/${activeStep.max_rounds}\n`;
         }
       } else if (role === "fixer") {
         // Fixer: inject source artifact + gate agent info
@@ -95,7 +95,7 @@ try {
             `source_agent=${sourceAgent}\n` +
             `source_artifact=${sourceArtifact}\n` +
             `gate_agent=${fixStep.agent}\n` +
-            `gate_round=${fixStep.round}/${fixStep.max_rounds}\n`;
+            `gate_round=${fixStep.round + 1}/${fixStep.max_rounds}\n`;
         }
       }
       // source / ungated → no extra context (just output_filepath)

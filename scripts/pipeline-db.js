@@ -129,7 +129,7 @@ function insertStep(db, scope, stepIndex, step, sourceAgent) {
     step.command || null,
     step.allowedTools ? step.allowedTools.join(",") : null,
     step.agent || null,
-    step.maxRounds || 3,
+    step.maxRounds != null ? step.maxRounds : 3,
     step.fixer || null,
     stepIndex === 0 ? "active" : "pending",
     sourceAgent

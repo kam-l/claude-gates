@@ -85,6 +85,8 @@ Step:     pending → active → passed
 
 Engine owns ALL transitions via `step(db, scope, { role, artifactVerdict, semanticVerdict })`.
 
+**Failed pipeline recovery:** When a pipeline exhausts rounds → status="failed". Block hook stops blocking (failed pipelines are invisible). To restart: delete the pipeline rows (`deletePipeline(db, scope)`) and re-spawn the source agent with the same scope. StopFailure handler auto-cleans failed pipelines on API errors.
+
 ## Hook Execution Order
 
 ```

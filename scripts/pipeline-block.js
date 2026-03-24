@@ -122,7 +122,7 @@ try {
   const parts = [];
   for (const act of actions) {
     if (act.action === "spawn") {
-      parts.push(`\`${act.agent}\` (scope=${act.scope}, round ${act.round}/${act.maxRounds})`);
+      parts.push(`\`${act.agent}\` (scope=${act.scope}, round ${act.round + 1}/${act.maxRounds})`);
     } else if (act.action === "source") {
       parts.push(`\`${act.agent}\` (scope=${act.scope})`);
     } else if (act.action === "command") {

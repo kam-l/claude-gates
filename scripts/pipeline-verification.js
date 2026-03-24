@@ -405,7 +405,7 @@ function logAction(action, scope, agentType) {
       process.stderr.write(`[Pipeline] Pipeline FAILED for scope "${scope}" at step ${action.step ? action.step.step_index : "?"}.\n`);
       break;
     case "spawn":
-      process.stderr.write(`[Pipeline] Next: spawn ${action.agent} (scope=${scope}, round ${action.round}/${action.maxRounds}).\n`);
+      process.stderr.write(`[Pipeline] Next: spawn ${action.agent} (scope=${scope}, round ${action.round + 1}/${action.maxRounds}).\n`);
       break;
     case "source":
       process.stderr.write(`[Pipeline] Next: ${action.agent} (scope=${scope}).\n`);
