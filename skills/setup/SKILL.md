@@ -8,12 +8,12 @@ AskUserQuestion-driven. Every step teaches a gate concept, then asks how to adap
 ## Plugin context
 
 - **Config**: `claude-gates.json` at repo root. Keys: `stop_gate` (patterns, commands, mode), `commit_gate` (commands, enabled), `edit_gate` (commands). Missing keys = built-in defaults.
-- **State**: per-session `session.db` (SQLite via `better-sqlite3`). Tables: `agents`, `gates`, `edits`, `tool_history`.
-- **Frontmatter fields**: `verification:` (block scalar — gater prompt), `conditions:` (block scalar — spawn check), `gates:` (block sequence — `[agent, rounds, fixer?]`).
-- **Scopes**: agents spawned with `scope=<name>` in prompt. Parallel scopes are isolated. Artifacts at `~/.claude/sessions/{id}/{scope}/{agent}.md`.
+- **State**: per-session `session.db` (SQLite via `better-sqlite3`). Tables: `pipeline_state`, `pipeline_steps`, `agents`, `edits`, `tool_history`.
+- **Frontmatter fields**: `verification:` (unified step array — `["prompt"]`, `[agent, N]`, `[agent, N, fixer]`, `[/cmd, Tool1]`), `conditions:` (block scalar — spawn check).
+- **Scopes**: agents spawned with `scope=<name>` in prompt. Parallel scopes are isolated.
 - **Gater**: `claude-gates:gater` — read-only evaluator. Verdicts: `Result: PASS`, `REVISE`, `CONVERGED`, `FAIL`.
-- **Hooks**: `conditions.js` (PreToolUse:Agent), `injection.js` (SubagentStart), `verification.js` (SubagentStop), `gate-block.js` (PreToolUse:*), `plan-gate.js` (PreToolUse:ExitPlanMode), `commit-gate.js` (PreToolUse:Bash), `edit-gate.js` (PostToolUse:Edit|Write), `stop-gate.js` (Stop).
-- **Dependency**: `better-sqlite3` native module. Must `npm install` in plugin cache dir.
+- **Hooks**: `pipeline-conditions.js` (PreToolUse:Agent), `pipeline-injection.js` (SubagentStart), `pipeline-verification.js` (SubagentStop), `pipeline-block.js` (PreToolUse:*), `plan-gate.js`, `commit-gate.js`, `edit-gate.js`, `stop-gate.js`.
+- **Dependency**: `better-sqlite3` native module — auto-installed via SessionStart hook.
 
 ## Routing
 

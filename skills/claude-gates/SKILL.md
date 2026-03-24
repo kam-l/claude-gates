@@ -1,116 +1,72 @@
 ---
-description: "ClaudeGates v2 — declarative pipeline gates. Use when spawning gated agents, debugging gate failures, writing agent definitions with verification:/conditions:/gates: fields, or understanding pipeline ordering. Triggers on: 'gate failed', 'agent blocked', 'missing artifact', 'verification failed', 'scope=', 'session_scopes', 'claude-gates', 'pipeline ordering', 'writing an agent', 'verification: field', 'conditions: field', 'gates: field', 'how do I gate', 'agent frontmatter', 'Result: PASS', 'Result: FAIL', 'Result: REVISE', 'Result: CONVERGED', 'SubagentStop', 'SubagentStart', 'edit-gate', 'stop-gate', 'verdict object', 'gate chain', 'post-completion gates'."
+description: "Pipeline gates documentation and troubleshooting. Auto-triggers on: 'gate failed', 'agent blocked', 'missing artifact', 'verification failed', 'scope=', 'claude-gates', 'pipeline ordering', 'writing an agent', 'verification: field', 'conditions: field', 'Result: PASS', 'Result: FAIL', 'Result: REVISE', 'Result: CONVERGED', 'SubagentStop', 'SubagentStart', 'edit-gate', 'stop-gate', 'gate chain', 'post-completion gates'."
 user-invocable: false
 ---
 
-# ClaudeGates v2
+# claude-gates v3
 
-Hybrid enforcement for pipelines. Two layers:
-- **Deterministic**: file exists, `Result:` line present, `requires:` deps met
-- **Semantic**: `claude -p` judges whether content demonstrates real work
+Hook-level enforcement for agent pipelines. Two layers:
+- **Deterministic**: artifact file exists, `Result:` line present, scope registered
+- **Semantic**: `claude -p` judges content quality via gater agent
 
-## Agent Definition Schema
-
-```yaml
----
-name: reviewer
-requires: ["implementer", "cleaner"]
-verification: |
-  Evaluate whether this demonstrates genuine critical analysis.
-  Reply EXACTLY on the last line: PASS or FAIL followed by your reason.
----
-```
-
-**Fields:**
-- `conditions:` — semantic PRE-check before agent spawns (claude -p, requires scope). Blocks if FAIL.
-- `requires:` — list of agent types that must complete first (requires scope)
-- `verification:` — semantic POST-check after agent completes (claude -p)
-- `gates:` — ordered post-completion gate chain (requires scope). Format: `- [agent_type, max_rounds]`
-
-**Artifact path**: `~/.claude/sessions/{session_id}/{scope}/{agent_type}.md`
-
-## Orchestrator Contract
-
-Include `scope=<name>` in spawn prompt. **Required** for agents with `gates:` or `requires:` fields (blocked otherwise). No scope = ungated for agents with only `verification:`.
-
-### Gate Chain (`gates:` field)
+## Agent Definition
 
 ```yaml
 ---
 name: implementer
-gates:
-  - [reviewer, 3]
-  - [playtester, 3]
+verification:                                # Ordered pipeline steps
+  - ["Does this show real implementation?"]  # SEMANTIC
+  - [reviewer, 3]                            # REVIEW (3 rounds max)
+  - [reviewer, 3, fixer]                     # REVIEW_WITH_FIXER
+conditions: |                                # Pre-spawn check (blocks on FAIL)
+  Only spawn for auth or data changes.
 ---
 ```
 
-After source agent completes (PASS/CONVERGED), gates are enforced in order:
-1. Conditions hook blocks all spawns in scope except the active gate agent
-2. Gate agent PASS → advance to next gate. All gates passed → scope unblocked
-3. Gate agent REVISE → source agent must re-run, then gate re-runs (max N rounds)
-4. Gate agent FAIL → semantic layer blocks rewrite (no state change)
+Spawn with `scope=<name>`: `Agent({ subagent_type: "implementer", prompt: "scope=task-1 ..." })`
 
-```
-Agent({ subagent_type: "reviewer", prompt: "scope=task-1 Review the spec..." })
-```
+## Pipeline Lifecycle
 
-## Agent Contract
+1. **PreToolUse:Agent** (`pipeline-conditions.js`) — conditions check + step enforcement + scope registration
+2. **SubagentStart** (`pipeline-injection.js`) — creates pipeline, injects `output_filepath` + role context
+3. **Agent runs** — writes artifact to `output_filepath`, last line: `Result: PASS` or `Result: FAIL`
+4. **SubagentStop** (`pipeline-verification.js`) — scope → role → semantic check → `engine.step()`
+5. **PreToolUse** (`pipeline-block.js`) — blocks tools while steps pending, forces expected agent spawns
 
-At SubagentStart, agents receive an injected `<agent_gate>` context block:
+## Step Types
 
-```xml
-<agent_gate importance="critical">
-output_filepath=~/.claude/sessions/{session_id}/{scope}/{agent_type}.md
-Write your artifact to this exact path. Last line must be: Result: PASS or Result: FAIL
-</agent_gate>
-```
+| Type | Format | Execution |
+|------|--------|-----------|
+| SEMANTIC | `["prompt"]` | claude -p at SubagentStop |
+| COMMAND | `[/cmd, Tool1, Tool2]` | block allows listed tools, /pass_or_revise records verdict |
+| REVIEW | `[agent, maxRounds]` | block forces agent spawn, agent writes verdict |
+| REVIEW_WITH_FIXER | `[agent, N, fixer]` | same as REVIEW; REVISE routes to fixer instead of source |
 
-Agents MUST write their artifact to `output_filepath` and include a `Result:` line.
-Upstream artifacts (from required agents) are siblings in the same scope directory.
+## Roles (engine.resolveRole)
 
-## Verdict Objects
+| Role | Identified by | Behavior |
+|------|--------------|----------|
+| source | `pipeline_state.source_agent` | SEMANTIC check → engine.step |
+| gate-agent | active step's `agent` field | implicit semantic → engine.step |
+| fixer | fix step's `fixer` field | implicit semantic → reactivate gate step |
+| gater | hardcoded `bareType === "gater"` | record verdict (feeds plan-gate) |
 
-After verification, `session_scopes.json` stores structured verdict objects:
+## State Machine
 
-```json
-{
-  "scope-name": {
-    "cleared": {
-      "reviewer": {
-        "verdict": "PASS",
-        "round": 1
-      }
-    }
-  }
-}
-```
+Pipeline: `normal` ⟷ `revision` → `completed` | `failed`
+Step: `pending` → `active` → `passed` / `revise` → `active` / `fix` → `active` / `failed`
 
-`if (cleared[agentType])` works for both `true` (initial clear) and verdict objects (after verification).
-
-## Hooks
-
-| Hook | Event | Does |
-|------|-------|------|
-| `claude-gates-conditions.js` | PreToolUse:Agent | Checks `requires:` deps, stages `output_filepath` in `_pending` |
-| `claude-gates-injection.js` | SubagentStart | Injects `output_filepath` via `<agent_gate>` tag |
-| `claude-gates-verification.js` | SubagentStop | Structural + semantic validation on stop |
-| `plan-gate.js` | PreToolUse:ExitPlanMode | Verdict-based: checks for gater PASS in session_scopes |
-| `commit-gate.js` | PreToolUse:Bash | Pre-commit validation (opt-in via `claude-gates.json`) |
-| `edit-gate.js` | PostToolUse:Edit\|Write | Tracks edited files, runs opt-in formatters |
-| `stop-gate.js` | Stop | Configurable debug scan + custom commands + commit nudge |
+Engine owns ALL transitions: `step(db, scope, { role, artifactVerdict, semanticVerdict })`
+Failed pipeline recovery: delete rows via `deletePipeline(db, scope)`, re-spawn source.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---------|-----|
-| "Missing X.md — spawn X first" | Spawn required agent before this one |
-| "Write your artifact to ..." | Agent must write to `output_filepath` from `<agent_gate>` block |
+| "Write your artifact to ..." | Write to `output_filepath` from `<agent_gate>` block |
 | "Missing Result: line" | Add `Result: PASS` or `Result: FAIL` as standalone line |
-| "Failed semantic validation" | Rewrite with substantive analysis |
-| Agent runs ungated | Add `scope=<name>` to spawn prompt |
-| "has gates/requires fields but no scope" | Add `scope=<name>` — required for agents with `gates:` or `requires:` |
-| "has active gate: X" | Spawn the named gate agent with the same scope |
-| "gate returned REVISE" | Resume/re-spawn the source agent to fix, then gate re-runs |
-| "Debug leftovers found" | Remove flagged patterns or stop again (nudge mode) / ignore (warn mode) |
-| "Pre-commit check failed" | Fix validation command failures before committing |
-| "Blocked: identical tool call" | Change your approach — same call was made 3 times |
+| "has verification but no scope" | Add `scope=<name>` to spawn prompt |
+| "expects agent X, not Y" | Pipeline step requires specific agent — spawn the named one |
+| "COMMAND step active" | Run the command, then `/pass_or_revise` |
+| Pipeline stuck | Run `/claude-gates:heal` with the session ID |
+| Debug leftovers at stop | Remove flagged patterns or stop again (nudge mode) |

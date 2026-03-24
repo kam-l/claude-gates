@@ -1,118 +1,66 @@
 ---
 description: "Diagnose and repair broken claude-gates pipeline state. Use when: gate is stuck, 'gate blocked' after agent completed, stale gate rows, gates not firing, agent completed but no gates spawned, pipeline frozen, 'Spawn: X (scope=Y)' blocking wrong agent, gate-block won't unblock, need to clear gates, reset pipeline."
-allowed-tools: Bash(node *), Read, Grep, Glob
+allowed-tools: Read, Grep, Glob
 argument-hint: [session-id]
 ---
 
+## Important
+
+Pipeline-block hooks may be blocking tool calls in the stuck session. ALL database commands MUST be given to the user as `! ...` commands to copy-paste themselves. Do NOT attempt to run them via Bash — the `!` prefix runs shell commands in the Claude Code terminal, bypassing hook blocks.
+
 ## Process
 
-1. **Get session ID.** If `$ARGUMENTS` is empty, `AskUserQuestion`: "Which session needs healing? Paste the session ID (UUID from the stuck session)."
+1. **Get session ID.** If `$ARGUMENTS` is empty, ask: "Paste the session ID (UUID) from the stuck session."
 
-2. **Locate DB.** Substitute the session ID into this command and run it:
+2. **Construct DB path.** Build the path and substitute it into all commands below:
+   - Windows: `C:\Users\{USERNAME}\.claude\sessions\{SESSION_ID}\session.db`
+   - macOS/Linux: `~/.claude/sessions/{SESSION_ID}/session.db`
+   Use forward slashes in the node commands regardless of OS.
 
-```bash
-node -e "
-const path = require('path');
-const HOME = process.env.USERPROFILE || process.env.HOME;
-const dbPath = path.join(HOME, '.claude', 'sessions', process.argv[1], 'session.db');
-require('fs').existsSync(dbPath) ? console.log(dbPath) : (console.error('NOT FOUND:', dbPath), process.exit(1));
-" "THE_SESSION_ID"
+3. **Dump state.** Present this diagnostic command for the user to run — substitute the real DB path for `DB_PATH`:
+
+```
+! node -e "const Database = require(require('path').join(process.env.CLAUDE_PLUGIN_DATA, 'node_modules', 'better-sqlite3')); const db = new Database(process.argv[1]); console.log('=== V3 PIPELINES ==='); try { db.prepare('SELECT scope, source_agent, status, current_step_index FROM pipeline_state').all().forEach(r => console.log(JSON.stringify(r))); } catch { console.log('(no v3 tables)'); } console.log('=== V3 STEPS ==='); try { db.prepare('SELECT scope, step_index, step_type, status, agent, fixer, round, max_rounds FROM pipeline_steps ORDER BY scope, step_index').all().forEach(r => console.log(JSON.stringify(r))); } catch { console.log('(no v3 tables)'); } console.log('=== V2 GATES ==='); try { db.prepare('SELECT scope, gate_agent, source_agent, fixer_agent, status, round, max_rounds FROM gates ORDER BY scope').all().forEach(r => console.log(JSON.stringify(r))); } catch { console.log('(no v2 tables)'); } console.log('=== AGENTS ==='); try { db.prepare('SELECT scope, agent, verdict FROM agents WHERE scope != \"_meta\"').all().forEach(r => console.log(JSON.stringify(r))); } catch {} console.log('=== BLOCKING ==='); let b = []; try { b.push(...db.prepare('SELECT scope, step_index, step_type, status, agent FROM pipeline_steps WHERE status IN (\"active\",\"revise\",\"fix\")').all().map(r => 'v3: ' + r.scope + ' step ' + r.step_index + ' (' + r.step_type + ') status=' + r.status + (r.agent ? ' agent=' + r.agent : ''))); } catch {} try { b.push(...db.prepare('SELECT scope, gate_agent, status FROM gates WHERE status IN (\"active\",\"revise\",\"fix\")').all().map(r => 'v2: ' + r.scope + '/' + r.gate_agent + ' status=' + r.status)); } catch {} if (!b.length) console.log('NONE'); else b.forEach(x => console.log(x)); db.close();" "DB_PATH"
 ```
 
-If not found, `AskUserQuestion`: "DB not found. Is the session ID correct?"
-
-3. **Dump state.** Substitute the DB path from step 2:
-
-```bash
-node -e "
-const Database = require(require('path').join(process.env.CLAUDE_PLUGIN_DATA, 'node_modules', 'better-sqlite3'));
-const db = new Database(process.argv[1]);
-const gates = db.prepare('SELECT scope, gate_agent, source_agent, fixer_agent, status, round, max_rounds, \"order\" FROM gates ORDER BY scope, \"order\"').all();
-const agents = db.prepare('SELECT scope, agent, verdict FROM agents WHERE scope != \"_meta\"').all();
-console.log('=== GATES ===');
-if (!gates.length) console.log('EMPTY');
-else gates.forEach(g => console.log(JSON.stringify(g)));
-console.log('=== AGENTS ===');
-if (!agents.length) console.log('EMPTY');
-else agents.forEach(a => console.log(JSON.stringify(a)));
-const blocking = gates.filter(g => ['active','revise','fix'].includes(g.status));
-console.log('=== BLOCKING ===');
-if (!blocking.length) console.log('NONE');
-else blocking.forEach(g => console.log(g.gate_agent + ' scope=' + g.scope + ' status=' + g.status));
-db.close();
-" "THE_DB_PATH"
-```
-
-4. **Present findings with `AskUserQuestion`.** Show blocking gates and diagnosis:
+4. **Analyze** the user's output. Present findings using this table:
 
 | Symptom | Likely cause |
 |---------|-------------|
-| Gate `active` but agent already completed | Gate agent's .md lacks `verification:` field, or verification hook errored silently |
-| Gates EMPTY after source completed | `scope=` missing from spawn prompt, or conditions hook was blocked by a stale gate |
-| Wrong scope blocking (e.g. task-2 blocks task-3) | Previous scope's gates not cleaned up after final PASS |
-| `status = 'fix'` stuck | Fixer completed but transition not processed |
-| `status = 'revise'` stuck | Source agent didn't re-run with scope |
+| v3 step `active` but agent completed | Verification hook errored silently, or agent didn't write to output_filepath |
+| v3 pipeline `revision` stuck | Source/fixer completed but verification hook didn't process reactivation |
+| v3 step `fix` stuck | Fixer completed but engine.step() wasn't called |
+| v2 gate `active` but agent completed | Gate agent's .md lacks `verification:` field |
+| BLOCKING = NONE but still blocked | Stale plugin cache — check version with `claude plugin list` |
+| Steps/gates EMPTY | `scope=` missing from spawn prompt, or pipeline never created |
 
-   Ask: "What would you like to do?" with choices:
-   - **Pass specific gate** — mark one gate as passed
-   - **Pass all gates for scope** — unblock entire scope
-   - **Init gates for scope** — create gate rows from source agent's definition
-   - **Nuclear clear** — pass ALL blocking gates across all scopes
-   - **Nothing** — just wanted the diagnosis
+Ask: "What would you like to do?" with options:
+- **Complete pipeline** (v3) — mark all steps passed for a scope
+- **Delete pipeline** (v3) — remove pipeline rows so it recreates on next spawn
+- **Pass v2 gates** — mark all v2 blocking gates as passed for a scope
+- **Nuclear clear** — clear ALL blocking state across v2 + v3
+- **Nothing** — just wanted the diagnosis
 
-5. **Execute chosen fix.** Substitute DB path, scope, and agent name into the chosen command:
+5. **Output fix command.** Substitute `DB_PATH` and `SCOPE` with actual values:
 
-**Pass specific gate:**
-```bash
-node -e "
-const Database = require(require('path').join(process.env.CLAUDE_PLUGIN_DATA, 'node_modules', 'better-sqlite3'));
-const db = new Database(process.argv[1]);
-db.prepare(\"UPDATE gates SET status = 'passed' WHERE scope = ? AND gate_agent = ?\").run(process.argv[2], process.argv[3]);
-console.log('Done');
-db.close();
-" "THE_DB_PATH" "THE_SCOPE" "THE_GATE_AGENT"
+**Complete v3 pipeline for scope:**
+```
+! node -e "const Database = require(require('path').join(process.env.CLAUDE_PLUGIN_DATA, 'node_modules', 'better-sqlite3')); const db = new Database(process.argv[1]); db.transaction(() => { db.prepare(\"UPDATE pipeline_steps SET status = 'passed' WHERE scope = ?\").run(process.argv[2]); db.prepare(\"UPDATE pipeline_state SET status = 'completed' WHERE scope = ?\").run(process.argv[2]); })(); console.log('Completed pipeline for scope:', process.argv[2]); db.close();" "DB_PATH" "SCOPE"
 ```
 
-**Pass all gates for scope:**
-```bash
-node -e "
-const Database = require(require('path').join(process.env.CLAUDE_PLUGIN_DATA, 'node_modules', 'better-sqlite3'));
-const db = new Database(process.argv[1]);
-const r = db.prepare(\"UPDATE gates SET status = 'passed' WHERE scope = ?\").run(process.argv[2]);
-console.log('Passed', r.changes, 'gates');
-db.close();
-" "THE_DB_PATH" "THE_SCOPE"
+**Delete v3 pipeline (allows recreation on re-spawn):**
+```
+! node -e "const Database = require(require('path').join(process.env.CLAUDE_PLUGIN_DATA, 'node_modules', 'better-sqlite3')); const db = new Database(process.argv[1]); db.transaction(() => { db.prepare('DELETE FROM pipeline_steps WHERE scope = ?').run(process.argv[2]); db.prepare('DELETE FROM pipeline_state WHERE scope = ?').run(process.argv[2]); })(); console.log('Deleted pipeline for scope:', process.argv[2]); db.close();" "DB_PATH" "SCOPE"
 ```
 
-**Init gates for scope:** Read the source agent's `.md` file (use `findAgentMd` lookup: `.claude/agents/{type}.md` in project, then `~/.claude/agents/`). Parse its `gates:` YAML entries as `[agent, maxRounds]` or `[agent, maxRounds, fixer]`. Then:
-
-```bash
-node -e "
-const Database = require(require('path').join(process.env.CLAUDE_PLUGIN_DATA, 'node_modules', 'better-sqlite3'));
-const db = new Database(process.argv[1]);
-const scope = process.argv[2];
-const source = process.argv[3];
-// gates: JSON array of [agent, maxRounds, fixer?]
-const gates = JSON.parse(process.argv[4]);
-const ins = db.prepare('INSERT INTO gates (scope, \"order\", gate_agent, source_agent, fixer_agent, max_rounds, round, status) VALUES (?, ?, ?, ?, ?, ?, 0, ?)');
-db.transaction(() => {
-  gates.forEach((g, i) => ins.run(scope, i + 1, g[0], source, g[2] || null, g[1], i === 0 ? 'active' : 'pending'));
-  db.prepare('INSERT OR REPLACE INTO agents (scope, agent, outputFilepath) VALUES (?, ?, null)').run(scope, source);
-})();
-console.log('Initialized', gates.length, 'gates for', scope);
-db.close();
-" "THE_DB_PATH" "THE_SCOPE" "SOURCE_AGENT_TYPE" '[[\"cleaner\",1],[\"reviewer\",3]]'
+**Pass all v2 gates for scope:**
+```
+! node -e "const Database = require(require('path').join(process.env.CLAUDE_PLUGIN_DATA, 'node_modules', 'better-sqlite3')); const db = new Database(process.argv[1]); const r = db.prepare(\"UPDATE gates SET status = 'passed' WHERE scope = ?\").run(process.argv[2]); console.log('Passed', r.changes, 'v2 gates for scope:', process.argv[2]); db.close();" "DB_PATH" "SCOPE"
 ```
 
-**Nuclear clear:**
-```bash
-node -e "
-const Database = require(require('path').join(process.env.CLAUDE_PLUGIN_DATA, 'node_modules', 'better-sqlite3'));
-const db = new Database(process.argv[1]);
-const r = db.prepare(\"UPDATE gates SET status = 'passed' WHERE status IN ('active','revise','fix')\").run();
-console.log('Cleared', r.changes, 'blocking gates');
-db.close();
-" "THE_DB_PATH"
+**Nuclear clear (all blocking state, all scopes):**
+```
+! node -e "const Database = require(require('path').join(process.env.CLAUDE_PLUGIN_DATA, 'node_modules', 'better-sqlite3')); const db = new Database(process.argv[1]); let c = 0; try { c += db.prepare(\"UPDATE pipeline_steps SET status = 'passed' WHERE status IN ('active','revise','fix')\").run().changes; c += db.prepare(\"UPDATE pipeline_state SET status = 'completed' WHERE status IN ('normal','revision')\").run().changes; } catch {} try { c += db.prepare(\"UPDATE gates SET status = 'passed' WHERE status IN ('active','revise','fix')\").run().changes; } catch {} console.log('Cleared', c, 'blocking entries'); db.close();" "DB_PATH"
 ```
 
-6. **Verify.** Re-run the diagnostic from step 3. Confirm blocking gates = NONE. Tell user to retry their action.
+6. **Verify.** Tell user to re-run the diagnostic command from step 3 and confirm BLOCKING = NONE. Then tell them to retry their action in the stuck session.

@@ -76,16 +76,14 @@ All gates are **fail-open** — if something breaks, your work continues unblock
 # .claude/agents/implementer.md
 ---
 name: implementer
-verification: |                        # SubagentStop: gater judges output against this prompt
-  Does this show real implementation?
-  Reply PASS or FAIL + reason.
-conditions: |                          # PreToolUse:Agent: gater checks spawn prompt first
+verification:                                # ordered pipeline steps
+  - ["Does this show real implementation?"]  # SEMANTIC — gater judges output
+  - [reviewer, 3]                            # REVIEW — 3 rounds max
+  - [security-auditor, 2]                    # REVIEW — 2 rounds max
+  - [reviewer, 3, fixer]                     # REVIEW_WITH_FIXER — REVISE routes to fixer
+conditions: |                                # PreToolUse:Agent: gater checks spawn prompt
   Only spawn for authentication or
   data handling changes.
-gates:                                 # after PASS: sequential reviewers, each scoped to this pipeline
-  - [reviewer, 3]                      # [agent_name, max_rounds] — 3 REVISEs = chain fails
-  - [security-auditor, 2]
-  - [reviewer, 3, fixer]              # optional 3rd: route REVISE to fixer instead of source
 ---
 ```
 
@@ -98,7 +96,7 @@ Spawn agents with `scope=<name>` so gates know which pipeline they belong to.
 ## Testing
 
 ```bash
-node scripts/claude-gates-test.js
+node scripts/pipeline-test.js
 ```
 
 ## License

@@ -17,7 +17,7 @@ When user picks a gate to explain, use these descriptions:
 | Gate | One-liner | Key detail |
 |------|-----------|-----------|
 | Verification | Judges agent output quality after completion | Two layers: structural (file + Result line) then semantic (gater LLM) |
-| Gate Chain | Sequential reviewers on an artifact | `gates:` field in frontmatter, `[agent, max_rounds, fixer?]` |
+| Gate Chain | Sequential reviewers on an artifact | `verification:` array steps: `[agent, max_rounds, fixer?]` |
 | Conditions | Blocks spawn if context doesn't match | Gater evaluates spawn prompt against `conditions:` field |
 | Plan | Blocks ExitPlanMode until plan reviewed | Auto-allows after 3 attempts (safety valve) |
 | Commit | Runs commands before git commit | `commit_gate.commands` array, disabled by default |

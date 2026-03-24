@@ -21,11 +21,9 @@ Ask: "Create a sample two-agent pipeline in `.claude/agents/`?" Options:
   ```yaml
   ---
   name: implementer
-  verification: |                  # gater judges this prompt against the output
-    Does this contain working code?
-    Reply PASS or FAIL + reason.
-  gates:                           # sequential reviewers after PASS
-    - [reviewer, 3]                # [agent_name, max_rounds]
+  verification:                              # ordered pipeline steps
+    - ["Does this contain working code?"]    # SEMANTIC step
+    - [reviewer, 3]                          # REVIEW step (3 rounds)
   ---
   ```
   Use language-appropriate verification prompts from detected stack.

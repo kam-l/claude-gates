@@ -1,7 +1,7 @@
 {
   "name": "claude-gates",
   "description": "Declarative pipeline gates for Claude Code. Define dependencies and quality checks in YAML — enforce them automatically.",
-  "version": "3.0.1",
+  "version": "3.1.0",
   "license": "MIT",
   "author": { "name": "kam-l" },
   "repository": "https://github.com/kam-l/claude-gates",
