@@ -1,0 +1,553 @@
+#!/usr/bin/env node
+/**
+ * Pipeline v3 — end-to-end integration test.
+ *
+ * Tests the full hook pipeline by simulating stdin/stdout hook communication.
+ * Creates temp agent .md files and exercises:
+ *   conditions → injection → verification flow
+ *   Happy path (all PASS) and revise path (REVISE → source re-run)
+ *
+ * Run: node scripts/test-pipeline-e2e.js
+ */
+
+const assert = require("assert");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+const { execSync } = require("child_process");
+
+let pass = 0, fail = 0;
+
+function test(name, fn) {
+  try {
+    fn();
+    pass++;
+    console.log(`  PASS: ${name}`);
+  } catch (e) {
+    fail++;
+    console.log(`  FAIL: ${name} — ${e.message}`);
+  }
+}
+
+function tmpDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-e2e-"));
+}
+
+function cleanup(dir) {
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+}
+
+/**
+ * Run a hook script with simulated stdin JSON.
+ * Returns { stdout, stderr, exitCode }.
+ */
+function runHook(scriptName, stdinData, opts = {}) {
+  const scriptPath = path.join(__dirname, scriptName);
+  const input = JSON.stringify(stdinData);
+  try {
+    const stdout = execSync(`node "${scriptPath}"`, {
+      input,
+      encoding: "utf-8",
+      timeout: 10000,
+      env: {
+        ...process.env,
+        CLAUDECODE: "", // prevent hook re-entry
+        ...opts.env
+      },
+      cwd: opts.cwd || process.cwd(),
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    return { stdout: stdout.trim(), stderr: "", exitCode: 0 };
+  } catch (e) {
+    return {
+      stdout: (e.stdout || "").trim(),
+      stderr: (e.stderr || "").trim(),
+      exitCode: e.status || 1
+    };
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Setup: create temp agent definitions
+// ══════════════════════════════════════════════════════════════════════
+
+const tempRoot = tmpDir();
+const agentsDir = path.join(tempRoot, ".claude", "agents");
+fs.mkdirSync(agentsDir, { recursive: true });
+
+// Source agent with verification pipeline
+fs.writeFileSync(path.join(agentsDir, "e2e-builder.md"), `---
+name: e2e-builder
+description: "E2E test builder agent"
+model: sonnet
+verification:
+  - ["Verify the artifact is complete and correct."]
+  - [e2e-reviewer, 3]
+---
+
+Build an artifact for testing.
+`);
+
+// Reviewer agent (gate agent)
+fs.writeFileSync(path.join(agentsDir, "e2e-reviewer.md"), `---
+name: e2e-reviewer
+description: "E2E test reviewer agent"
+model: sonnet
+role: gate
+---
+
+Review the source artifact.
+`);
+
+// Agent with conditions
+fs.writeFileSync(path.join(agentsDir, "e2e-conditional.md"), `---
+name: e2e-conditional
+description: "E2E test conditional agent"
+model: sonnet
+conditions: |
+  Check if scope has been defined.
+verification:
+  - ["Verify output."]
+---
+
+Conditional agent.
+`);
+
+const sessionId = "e2e-test-" + Date.now();
+
+// ══════════════════════════════════════════════════════════════════════
+// Test: conditions hook
+// ══════════════════════════════════════════════════════════════════════
+
+console.log("\n=== E2E: pipeline-conditions.js ===");
+
+test("conditions: allow agent with scope", () => {
+  const r = runHook("pipeline-conditions.js", {
+    session_id: sessionId,
+    tool_input: {
+      subagent_type: "e2e-builder",
+      prompt: "Build scope=test-e2e the thing"
+    }
+  }, { cwd: tempRoot });
+  // Should allow (exit 0, no block decision)
+  assert.strictEqual(r.exitCode, 0);
+  if (r.stdout) {
+    const out = JSON.parse(r.stdout);
+    assert.notStrictEqual(out.decision, "block");
+  }
+});
+
+test("conditions: block agent without scope when requiresScope", () => {
+  const r = runHook("pipeline-conditions.js", {
+    session_id: sessionId,
+    tool_input: {
+      subagent_type: "e2e-builder",
+      prompt: "Build the thing without scope"
+    }
+  }, { cwd: tempRoot });
+  assert.strictEqual(r.exitCode, 0);
+  if (r.stdout) {
+    const out = JSON.parse(r.stdout);
+    assert.strictEqual(out.decision, "block");
+    assert.ok(out.reason.includes("scope="));
+  }
+});
+
+test("conditions: allow resume without gating", () => {
+  const r = runHook("pipeline-conditions.js", {
+    session_id: sessionId,
+    tool_input: {
+      subagent_type: "e2e-builder",
+      prompt: "Resume",
+      resume: true
+    }
+  }, { cwd: tempRoot });
+  assert.strictEqual(r.exitCode, 0);
+  assert.strictEqual(r.stdout, "");
+});
+
+test("conditions: allow unknown agent (no .md file)", () => {
+  const r = runHook("pipeline-conditions.js", {
+    session_id: sessionId,
+    tool_input: {
+      subagent_type: "nonexistent-agent",
+      prompt: "scope=test-e2e Do something"
+    }
+  }, { cwd: tempRoot });
+  assert.strictEqual(r.exitCode, 0);
+  assert.strictEqual(r.stdout, "");
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// Test: injection hook
+// ══════════════════════════════════════════════════════════════════════
+
+console.log("\n=== E2E: pipeline-injection.js ===");
+
+test("injection: injects output_filepath and agent_gate context", () => {
+  const r = runHook("pipeline-injection.js", {
+    session_id: sessionId,
+    agent_type: "e2e-builder",
+    agent_id: "agent-001"
+  }, { cwd: tempRoot });
+  assert.strictEqual(r.exitCode, 0);
+  assert.ok(r.stdout, "Expected stdout output");
+  const out = JSON.parse(r.stdout);
+  assert.strictEqual(out.hookSpecificOutput.hookEventName, "SubagentStart");
+  assert.ok(out.hookSpecificOutput.additionalContext.includes("output_filepath="));
+  assert.ok(out.hookSpecificOutput.additionalContext.includes("agent-001.md"));
+  assert.ok(out.hookSpecificOutput.additionalContext.includes("<agent_gate"));
+});
+
+test("injection: handles missing session gracefully", () => {
+  const r = runHook("pipeline-injection.js", {
+    session_id: "",
+    agent_type: "e2e-builder",
+    agent_id: "agent-002"
+  }, { cwd: tempRoot });
+  // Should exit 0 (fail-open), no stdout
+  assert.strictEqual(r.exitCode, 0);
+  assert.strictEqual(r.stdout, "");
+});
+
+test("injection: handles plugin-qualified agent type", () => {
+  const r = runHook("pipeline-injection.js", {
+    session_id: sessionId,
+    agent_type: "claude-gates:e2e-builder",
+    agent_id: "agent-003"
+  }, { cwd: tempRoot });
+  assert.strictEqual(r.exitCode, 0);
+  if (r.stdout) {
+    const out = JSON.parse(r.stdout);
+    assert.ok(out.hookSpecificOutput.additionalContext.includes("output_filepath="));
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// Test: block hook
+// ══════════════════════════════════════════════════════════════════════
+
+console.log("\n=== E2E: pipeline-block.js ===");
+
+test("block: allows when no active pipelines", () => {
+  const freshSession = "block-test-" + Date.now();
+  const r = runHook("pipeline-block.js", {
+    session_id: freshSession,
+    tool_name: "Edit",
+    tool_input: {},
+    agent_type: ""
+  }, { cwd: tempRoot });
+  assert.strictEqual(r.exitCode, 0);
+  assert.strictEqual(r.stdout, "");
+});
+
+test("block: allows read-only tools", () => {
+  const r = runHook("pipeline-block.js", {
+    session_id: sessionId,
+    tool_name: "Read",
+    tool_input: {},
+    agent_type: ""
+  }, { cwd: tempRoot });
+  assert.strictEqual(r.exitCode, 0);
+  assert.strictEqual(r.stdout, "");
+});
+
+test("block: allows subagent calls", () => {
+  const r = runHook("pipeline-block.js", {
+    session_id: sessionId,
+    tool_name: "Edit",
+    tool_input: {},
+    agent_type: "e2e-builder" // caller is a subagent
+  }, { cwd: tempRoot });
+  assert.strictEqual(r.exitCode, 0);
+  assert.strictEqual(r.stdout, "");
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// Test: verification hook (structural parts only — no claude -p)
+// ══════════════════════════════════════════════════════════════════════
+
+console.log("\n=== E2E: pipeline-verification.js ===");
+
+test("verification: gater hardcoded fallback records verdict", () => {
+  const r = runHook("pipeline-verification.js", {
+    session_id: sessionId,
+    agent_type: "gater",
+    agent_id: "gater-001",
+    last_assistant_message: "The plan looks good.\n\nResult: PASS",
+    stop_hook_active: false
+  }, { cwd: tempRoot });
+  assert.strictEqual(r.exitCode, 0);
+});
+
+test("verification: exits cleanly for unknown agent", () => {
+  const r = runHook("pipeline-verification.js", {
+    session_id: sessionId,
+    agent_type: "totally-unknown",
+    agent_id: "unknown-001",
+    last_assistant_message: "",
+    stop_hook_active: false
+  }, { cwd: tempRoot });
+  assert.strictEqual(r.exitCode, 0);
+});
+
+test("verification: skips when stop_hook_active", () => {
+  const r = runHook("pipeline-verification.js", {
+    session_id: sessionId,
+    agent_type: "e2e-builder",
+    agent_id: "agent-skip",
+    last_assistant_message: "",
+    stop_hook_active: true
+  }, { cwd: tempRoot });
+  assert.strictEqual(r.exitCode, 0);
+  assert.strictEqual(r.stdout, "");
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// Test: Full pipeline flow (engine-level, simulating hook sequence)
+// ══════════════════════════════════════════════════════════════════════
+
+console.log("\n=== E2E: full pipeline flow (engine-level) ===");
+
+const crud = require("./pipeline-db.js");
+const engine = require("./pipeline.js");
+const shared = require("./pipeline-shared.js");
+
+test("full flow: parse agent → create pipeline → step through", () => {
+  const agentMd = fs.readFileSync(path.join(agentsDir, "e2e-builder.md"), "utf-8");
+  const steps = shared.parseVerification(agentMd);
+  assert.ok(steps, "parseVerification should return steps");
+  assert.strictEqual(steps.length, 2);
+  assert.strictEqual(steps[0].type, "SEMANTIC");
+  assert.strictEqual(steps[1].type, "REVIEW");
+  assert.strictEqual(steps[1].agent, "e2e-reviewer");
+  assert.strictEqual(steps[1].maxRounds, 3);
+
+  const dir = tmpDir();
+  const db = crud.getDb(dir);
+  try {
+    engine.createPipeline(db, "e2e-scope", "e2e-builder", steps);
+
+    // Step 0: SEMANTIC — source completes, semantic check fires
+    let a = engine.getNextAction(db, "e2e-scope");
+    assert.strictEqual(a.action, "semantic");
+
+    a = engine.step(db, "e2e-scope", "PASS"); // semantic passes
+    assert.strictEqual(a.action, "spawn");
+    assert.strictEqual(a.agent, "e2e-reviewer");
+
+    // Step 1: REVIEW — reviewer passes
+    a = engine.step(db, "e2e-scope", "PASS");
+    assert.strictEqual(a.action, "done");
+    assert.strictEqual(crud.getPipelineState(db, "e2e-scope").status, "completed");
+  } finally {
+    db.close();
+    cleanup(dir);
+  }
+});
+
+test("full flow: revise path → source re-run → reviewer re-run", () => {
+  const agentMd = fs.readFileSync(path.join(agentsDir, "e2e-builder.md"), "utf-8");
+  const steps = shared.parseVerification(agentMd);
+
+  const dir = tmpDir();
+  const db = crud.getDb(dir);
+  try {
+    engine.createPipeline(db, "rev-scope", "e2e-builder", steps);
+
+    // SEMANTIC passes
+    engine.step(db, "rev-scope", "PASS");
+
+    // REVIEW: reviewer says REVISE
+    let a = engine.step(db, "rev-scope", "REVISE");
+    assert.strictEqual(a.action, "source");
+    assert.strictEqual(a.agent, "e2e-builder"); // source re-runs
+    assert.strictEqual(crud.getPipelineState(db, "rev-scope").status, "revision");
+
+    // Source re-completes
+    a = engine.step(db, "rev-scope", { role: "source", artifactVerdict: "PASS" });
+    assert.strictEqual(a.action, "spawn");
+    assert.strictEqual(a.agent, "e2e-reviewer"); // reviewer re-runs
+    assert.strictEqual(crud.getPipelineState(db, "rev-scope").status, "normal");
+
+    // Reviewer passes on second attempt
+    a = engine.step(db, "rev-scope", "PASS");
+    assert.strictEqual(a.action, "done");
+  } finally {
+    db.close();
+    cleanup(dir);
+  }
+});
+
+test("full flow: role resolution through pipeline lifecycle", () => {
+  const steps = [
+    { type: "SEMANTIC", prompt: "Check." },
+    { type: "REVIEW_WITH_FIXER", agent: "e2e-reviewer", maxRounds: 3, fixer: "e2e-fixer" },
+  ];
+
+  const dir = tmpDir();
+  const db = crud.getDb(dir);
+  try {
+    engine.createPipeline(db, "role-scope", "e2e-builder", steps);
+
+    // Initial: SEMANTIC step is active — reviewer is NOT gate-agent yet
+    assert.strictEqual(engine.resolveRole(db, "role-scope", "e2e-reviewer"), "ungated"); // step 0 is SEMANTIC, not REVIEW
+    assert.strictEqual(engine.resolveRole(db, "role-scope", "e2e-builder"), "source");
+    assert.strictEqual(engine.resolveRole(db, "role-scope", "e2e-fixer"), "ungated"); // not active yet
+
+    // Advance past SEMANTIC → step 1 (REVIEW_WITH_FIXER) becomes active
+    engine.step(db, "role-scope", "PASS");
+
+    // Now reviewer IS gate-agent (REVIEW_WITH_FIXER step active)
+    assert.strictEqual(engine.resolveRole(db, "role-scope", "e2e-reviewer"), "gate-agent");
+
+    // REVISE → fixer role activates
+    engine.step(db, "role-scope", "REVISE");
+    assert.strictEqual(engine.resolveRole(db, "role-scope", "e2e-fixer"), "fixer");
+    assert.strictEqual(engine.resolveRole(db, "role-scope", "e2e-builder"), "source"); // still source
+
+    // Fixer completes → reviewer re-runs
+    engine.step(db, "role-scope", { role: "fixer", artifactVerdict: "PASS" });
+    assert.strictEqual(engine.resolveRole(db, "role-scope", "e2e-reviewer"), "gate-agent");
+  } finally {
+    db.close();
+    cleanup(dir);
+  }
+});
+
+test("full flow: parallel scopes don't cross-contaminate", () => {
+  const steps = [{ type: "REVIEW", agent: "rev", maxRounds: 3 }];
+  const dir = tmpDir();
+  const db = crud.getDb(dir);
+  try {
+    engine.createPipeline(db, "scope-a", "builder-a", steps);
+    engine.createPipeline(db, "scope-b", "builder-b", steps);
+
+    // Scope A: REVISE
+    engine.step(db, "scope-a", "REVISE");
+    // Scope B: PASS
+    engine.step(db, "scope-b", "PASS");
+
+    assert.strictEqual(crud.getPipelineState(db, "scope-a").status, "revision");
+    assert.strictEqual(crud.getPipelineState(db, "scope-b").status, "completed");
+
+    // getAllNextActions only returns scope-a
+    const actions = engine.getAllNextActions(db);
+    assert.strictEqual(actions.length, 1);
+    assert.strictEqual(actions[0].scope, "scope-a");
+  } finally {
+    db.close();
+    cleanup(dir);
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// Test: COMMAND verdict file processing
+// ══════════════════════════════════════════════════════════════════════
+
+console.log("\n=== E2E: COMMAND verdict file ===");
+
+test("verdict file: write → block hook reads → advances → deletes", () => {
+  const dir = tmpDir();
+  const db = crud.getDb(dir);
+  try {
+    engine.createPipeline(db, "cmd-scope", "worker", [
+      { type: "COMMAND", command: "/question", allowedTools: ["AskUserTool"] },
+      { type: "REVIEW", agent: "reviewer", maxRounds: 3 },
+    ]);
+
+    // Verify COMMAND step is active
+    const a1 = engine.getNextAction(db, "cmd-scope");
+    assert.strictEqual(a1.action, "command");
+
+    // Write verdict file (simulating /pass_or_revise skill)
+    const scopeDir = path.join(dir, "cmd-scope");
+    fs.mkdirSync(scopeDir, { recursive: true });
+    const verdictPath = path.join(scopeDir, ".command-verdict.md");
+    fs.writeFileSync(verdictPath, "Result: PASS\n");
+
+    // Simulate what block hook does: read verdict, feed to engine, delete
+    const content = fs.readFileSync(verdictPath, "utf-8");
+    const match = shared.VERDICT_RE.exec(content);
+    assert.ok(match, "VERDICT_RE should match");
+    assert.strictEqual(match[1], "PASS");
+
+    engine.step(db, "cmd-scope", { role: null, artifactVerdict: "PASS" });
+    fs.unlinkSync(verdictPath);
+
+    // COMMAND step should now be passed, REVIEW active
+    assert.strictEqual(crud.getStep(db, "cmd-scope", 0).status, "passed");
+    assert.strictEqual(crud.getStep(db, "cmd-scope", 1).status, "active");
+    assert.ok(!fs.existsSync(verdictPath), "Verdict file should be deleted");
+  } finally {
+    db.close();
+    cleanup(dir);
+  }
+});
+
+test("verdict file: REVISE sends back to source", () => {
+  const dir = tmpDir();
+  const db = crud.getDb(dir);
+  try {
+    engine.createPipeline(db, "rev-cmd", "worker", [
+      { type: "COMMAND", command: "/question", allowedTools: ["AskUserTool"] },
+    ]);
+
+    const a = engine.step(db, "rev-cmd", { role: null, artifactVerdict: "REVISE" });
+    assert.strictEqual(a.action, "source");
+    assert.strictEqual(a.agent, "worker");
+    assert.strictEqual(crud.getPipelineState(db, "rev-cmd").status, "revision");
+  } finally {
+    db.close();
+    cleanup(dir);
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// Test: gt-worker v3 format parsing
+// ══════════════════════════════════════════════════════════════════════
+
+console.log("\n=== E2E: gt-worker v3 format ===");
+
+test("gt-worker verification: field parses to SEMANTIC + REVIEW_WITH_FIXER", () => {
+  const agentMd = fs.readFileSync(
+    path.join(process.cwd(), ".claude", "agents", "gt-worker.md"), "utf-8"
+  );
+  const steps = shared.parseVerification(agentMd);
+  assert.ok(steps, "parseVerification should return steps");
+  assert.strictEqual(steps.length, 2);
+  assert.strictEqual(steps[0].type, "SEMANTIC");
+  assert.ok(steps[0].prompt.includes("complete"));
+  assert.strictEqual(steps[1].type, "REVIEW_WITH_FIXER");
+  assert.strictEqual(steps[1].agent, "gt-reviewer");
+  assert.strictEqual(steps[1].maxRounds, 3);
+  assert.strictEqual(steps[1].fixer, "gt-fixer");
+});
+
+test("gt-reviewer has no verification: steps (role: gate only)", () => {
+  const agentMd = fs.readFileSync(
+    path.join(process.cwd(), ".claude", "agents", "gt-reviewer.md"), "utf-8"
+  );
+  const steps = shared.parseVerification(agentMd);
+  assert.strictEqual(steps, null);
+});
+
+test("gt-worker requiresScope returns true", () => {
+  const agentMd = fs.readFileSync(
+    path.join(process.cwd(), ".claude", "agents", "gt-worker.md"), "utf-8"
+  );
+  assert.strictEqual(shared.requiresScope(agentMd), true);
+});
+
+// ══════════════════════════════════════════════════════════════════════
+
+// Cleanup
+cleanup(tempRoot);
+
+const HOME = process.env.USERPROFILE || process.env.HOME || "";
+const sessDir = path.join(HOME, ".claude", "sessions", sessionId);
+cleanup(sessDir);
+
+console.log(`\n${"=".repeat(50)}`);
+console.log(`${pass} passed, ${fail} failed`);
+process.exit(fail > 0 ? 1 : 0);

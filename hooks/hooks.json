@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/gate-block.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/pipeline-block.js",
             "timeout": 5000
           }
         ]
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/claude-gates-conditions.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/pipeline-conditions.js",
             "timeout": 10000
           }
         ]
@@ -89,7 +89,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/claude-gates-injection.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/pipeline-injection.js",
             "timeout": 5000
           }
         ]
@@ -100,7 +100,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/claude-gates-verification.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/pipeline-verification.js",
             "timeout": 120000
           }
         ]

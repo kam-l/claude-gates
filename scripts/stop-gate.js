@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * ClaudeGates v2 — Stop gate.
+ * ClaudeGates v3 — Stop gate.
  *
  * 1. Artifact completeness: warns about agents with no verdict or REVISE verdict
  *    in scopes where other agents have completed (PASS/CONVERGED).
+ *    Also checks pipeline_state for non-completed pipelines.
  * 2. Debug leftovers: scans edit-gate's file list for configurable debug markers.
  * 3. Custom commands: runs configured validation commands.
  *
@@ -11,14 +12,20 @@
  *   "warn"  (default) — stderr only, no block
  *   "nudge" — blocks first time, passes on second stop
  *
+ * StopFailure: cleans up orphaned pipeline_steps so createPipeline can recreate.
+ *
  * Fail-open.
  */
 
 const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
-const { getDb, getEdits, getEditCounts, isCleared, registerAgent } = require("./claude-gates-db.js");
 const { loadConfig } = require("./claude-gates-config.js");
+
+// Import from both v2 and v3 DB modules (fail-open if either missing)
+let v2Db, v3Db;
+try { v2Db = require("./claude-gates-db.js"); } catch {}
+try { v3Db = require("./pipeline-db.js"); } catch {}
 
 try {
   const data = JSON.parse(fs.readFileSync(0, "utf-8"));
@@ -29,26 +36,48 @@ try {
   const HOME = process.env.USERPROFILE || process.env.HOME || "";
   const sessionDir = path.join(HOME, ".claude", "sessions", sessionId);
 
-  // SQLite state
-  const db = getDb(sessionDir);
+  // Open DB (v3 schema is a superset — getDb initializes both sets of tables)
+  const db = v3Db ? v3Db.getDb(sessionDir) : (v2Db ? v2Db.getDb(sessionDir) : null);
+  if (!db) process.exit(0);
 
-  // ── StopFailure: delete orphaned gates so initGates can recreate on retry ──
+  // ── StopFailure: clean up orphaned state for retry ──
   if (data.error) {
     try {
-      // Delete (not reset) — initGates is a no-op when rows exist, so resetting
-      // to 'pending' would leave a stuck chain with no active gate. Deleting lets
-      // initGates recreate fresh with the first gate active on the next run.
-      const scopes = db.prepare(
-        "SELECT DISTINCT scope FROM gates WHERE status IN ('active','revise','fix')"
-      ).all().map(r => r.scope);
-      if (scopes.length > 0) {
-        const del = db.prepare("DELETE FROM gates WHERE scope = ?");
-        const tx = db.transaction(() => { for (const s of scopes) del.run(s); });
-        tx();
-        process.stderr.write(
-          `[ClaudeGates] API error (${data.error}): cleared gates for ${scopes.length} scope(s) — will reinitialize on retry.\n`
-        );
-      }
+      // v2: delete orphaned gates
+      try {
+        const scopes = db.prepare(
+          "SELECT DISTINCT scope FROM gates WHERE status IN ('active','revise','fix')"
+        ).all().map(r => r.scope);
+        if (scopes.length > 0) {
+          const del = db.prepare("DELETE FROM gates WHERE scope = ?");
+          const tx = db.transaction(() => { for (const s of scopes) del.run(s); });
+          tx();
+          process.stderr.write(
+            `[Pipeline] API error (${data.error}): cleared v2 gates for ${scopes.length} scope(s).\n`
+          );
+        }
+      } catch {} // v2 table may not exist
+
+      // v3: delete orphaned pipeline_steps + pipeline_state for retry
+      try {
+        const pipelines = db.prepare(
+          "SELECT scope FROM pipeline_state WHERE status IN ('normal','revision')"
+        ).all().map(r => r.scope);
+        if (pipelines.length > 0) {
+          const delSteps = db.prepare("DELETE FROM pipeline_steps WHERE scope = ?");
+          const delState = db.prepare("DELETE FROM pipeline_state WHERE scope = ?");
+          const tx = db.transaction(() => {
+            for (const s of pipelines) {
+              delSteps.run(s);
+              delState.run(s);
+            }
+          });
+          tx();
+          process.stderr.write(
+            `[Pipeline] API error (${data.error}): cleared pipelines for ${pipelines.length} scope(s) — will reinitialize on retry.\n`
+          );
+        }
+      } catch {} // v3 table may not exist
     } catch {}
     db.close();
     process.exit(0);
@@ -57,23 +86,24 @@ try {
   let files;
   const issues = [];
 
-  if (isCleared(db, "_nudge", "stop-gate")) { db.close(); process.exit(0); }
+  // Nudge check (v2 pattern — reused)
+  try {
+    const nudged = db.prepare("SELECT 1 FROM agents WHERE scope = '_nudge' AND agent = 'stop-gate'").get();
+    if (nudged) { db.close(); process.exit(0); }
+  } catch {}
 
-  // ── Artifact completeness check ──
+  // ── v2 artifact completeness check ──
   try {
     const incomplete = db.prepare(
       "SELECT scope, agent FROM agents WHERE (verdict IS NULL OR verdict = 'REVISE') AND SUBSTR(scope, 1, 1) != '_'"
     ).all();
 
     for (const row of incomplete) {
-      // Check if scope is active (has at least one PASS/CONVERGED agent)
       const active = db.prepare(
         "SELECT 1 FROM agents WHERE scope = ? AND verdict IN ('PASS','CONVERGED') LIMIT 1"
       ).get(row.scope);
+      if (!active) continue;
 
-      if (!active) continue; // scope abandoned or not started — skip
-
-      // Check if artifact file exists
       const artifactPath = path.join(sessionDir, row.scope, row.agent + ".md");
       if (!fs.existsSync(artifactPath)) {
         issues.push(`  ${row.scope}/${row.agent}: missing artifact (verdict: ${row.verdict || "none"})`);
@@ -81,7 +111,37 @@ try {
     }
   } catch {} // non-fatal
 
-  files = getEdits(db);
+  // ── v3 pipeline completeness check ──
+  try {
+    const activePipelines = db.prepare(
+      "SELECT scope, source_agent, status FROM pipeline_state WHERE status IN ('normal','revision')"
+    ).all();
+
+    for (const p of activePipelines) {
+      if (p.status === "revision") {
+        issues.push(`  ${p.scope}: pipeline in revision — source "${p.source_agent}" must re-run`);
+      } else {
+        // Normal state — check for non-passed steps
+        const nonPassed = db.prepare(
+          "SELECT step_index, step_type, status, agent FROM pipeline_steps WHERE scope = ? AND status != 'passed'"
+        ).all(p.scope);
+        if (nonPassed.length > 0) {
+          const step = nonPassed[0];
+          const desc = step.agent
+            ? `step ${step.step_index} (${step.step_type}: ${step.agent}) — ${step.status}`
+            : `step ${step.step_index} (${step.step_type}) — ${step.status}`;
+          issues.push(`  ${p.scope}: pipeline incomplete — ${desc}`);
+        }
+      }
+    }
+  } catch {} // v3 tables may not exist
+
+  // ── Edit tracking ──
+  try {
+    files = v3Db ? v3Db.getEdits(db) : (v2Db ? v2Db.getEdits(db) : []);
+  } catch {
+    files = [];
+  }
   if (files.length === 0 && issues.length === 0) { db.close(); process.exit(0); }
 
   // ── Debug leftover scan (configurable patterns) ──
@@ -95,32 +155,27 @@ try {
   const matches = [];
 
   for (const filePath of files) {
-    // Skip deleted files and test files
     if (!fs.existsSync(filePath)) continue;
     if (/[-.]test\b|\.spec\b|\btest[s]?\//i.test(filePath)) continue;
 
     let linesToCheck;
-
-    // Try git diff to only check newly added lines
     try {
       const diff = execSync(
         `git diff HEAD -- "${filePath}"`,
         { encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"] }
       );
-      // Extract only added lines (start with +, not +++)
       linesToCheck = diff
         .split("\n")
         .filter(l => l.startsWith("+") && !l.startsWith("+++"))
         .map(l => l.substring(1))
         .slice(0, MAX_LINES);
     } catch {
-      // git unavailable or file not tracked → scan full file
       try {
         linesToCheck = fs.readFileSync(filePath, "utf-8")
           .split("\n")
           .slice(0, MAX_LINES);
       } catch {
-        continue; // unreadable → skip
+        continue;
       }
     }
 
@@ -150,7 +205,7 @@ try {
 
   // ── Commit nudge: uncommitted tracked files ──
   try {
-    const counts = getEditCounts(db);
+    const counts = v3Db ? v3Db.getEditCounts(db) : (v2Db ? v2Db.getEditCounts(db) : { files: 0 });
     if (counts.files > 0) {
       const status = execSync("git status --porcelain", {
         encoding: "utf-8",
@@ -161,7 +216,7 @@ try {
         issues.push(`  ${counts.files} files changed without commit. Consider committing.`);
       }
     }
-  } catch {} // git unavailable — skip
+  } catch {}
 
   if (matches.length === 0 && issues.length === 0) {
     db.close();
@@ -185,17 +240,18 @@ try {
   const summary = parts.join("\n");
 
   if (config.stop_gate.mode === "nudge") {
-    // Block-once: set marker so second stop passes
-    try { registerAgent(db, "_nudge", "stop-gate", null); } catch {}
+    try {
+      if (v3Db) v3Db.registerAgent(db, "_nudge", "stop-gate", null);
+      else if (v2Db) v2Db.registerAgent(db, "_nudge", "stop-gate", null);
+    } catch {}
     db.close();
     process.stdout.write(JSON.stringify({
       decision: "block",
-      reason: `[ClaudeGates] ${summary}\nClean up or stop again to proceed.`
+      reason: `[Pipeline] ${summary}\nClean up or stop again to proceed.`
     }));
   } else {
-    // Warn mode (default): stderr only, no block
     db.close();
-    process.stderr.write(`[ClaudeGates] ${summary}\n`);
+    process.stderr.write(`[Pipeline] ${summary}\n`);
   }
   process.exit(0);
 } catch {

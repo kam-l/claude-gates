@@ -1,47 +1,153 @@
 # claude-gates
 
-Declarative pipeline gates — `verification:`, `conditions:`, and `gates:` fields in agent frontmatter.
+Declarative pipeline gates — `verification:` unified array format in agent frontmatter.
+
+## Plugin Packaging
+
+- Plugin manifest: `.claude-plugin/plugin.json` (name, version, description, author)
+- Version in `package.json` and `plugin.json` must stay in sync
+- Repository: `https://github.com/kam-l/claude-gates`
+
+## Pipeline v3 Lifecycle
+
+The full lifecycle for a gated agent (e.g., `gt-worker` with unified `verification:` array):
+
+```
+1. Parent spawns gt-worker with scope=X
+   ├─ PreToolUse:Agent  → pipeline-conditions.js: conditions check + step enforcement + scope registration
+   ├─ SubagentStart     → pipeline-injection.js:  creates pipeline from verification: steps, injects output_filepath
+   ├─ gt-worker runs, writes artifact to output_filepath
+   └─ SubagentStop      → pipeline-verification.js: scope → role → semantic check → engine.step()
+
+2. Pipeline steps execute in order:
+   ├─ SEMANTIC step: verification.js runs claude -p semantic check, feeds verdict to engine
+   ├─ REVIEW step: pipeline-block.js blocks → forces reviewer spawn → engine.step(verdict)
+   ├─ COMMAND step: pipeline-block.js blocks → orchestrator runs command → /pass_or_revise → verdict file
+   └─ Each step: PASS → advance | REVISE → source/fixer re-run | FAIL → round++ or exhaust
+
+3. Revision flow (REVISE on any step):
+   ├─ With fixer: fixer spawned → fixes artifact → engine reactivates gate → reviewer re-runs
+   └─ Without fixer: source re-runs → engine reactivates gate → reviewer re-runs
+
+4. All steps pass → pipeline-block.js lifts → parent resumes
+```
+
+## Agent Roles
+
+Roles determined by `engine.resolveRole()` — checks `pipeline_steps` table, not agent definition:
+
+| Role | How identified | Verdict handling |
+|------|---------------|-----------------|
+| **gater** | Hardcoded `bareType === "gater"` | `lastMessage` VERDICT_RE → recordVerdict (feeds plan-gate) |
+| **source** | `pipeline_state.source_agent` match | Semantic check (SEMANTIC step) → `engine.step({ role: "source" })` |
+| **gate-agent** | Active step's `agent` field match | Implicit semantic + `engine.step({ role: "gate-agent" })` |
+| **fixer** | Fix step's `fixer` field match | Implicit semantic + `engine.step({ role: "fixer" })` |
+| **ungated** | No pipeline match | exit(0) |
+
+## Frontmatter Reference
+
+Agent `.md` files support these frontmatter fields (parsed by `pipeline-shared.js`):
+
+```yaml
+---
+name: agent-name              # Required. Agent identifier.
+description: "..."            # Agent description for Claude Code.
+model: sonnet                 # Optional. Model override (haiku/sonnet/opus).
+role: gate                    # Optional. "gate" or "fixer" — tells injection.js to enhance context.
+conditions: |                 # Optional. Semantic pre-check prompt. Evaluated before spawn.
+  Check if X is ready...
+verification:                 # Optional. Unified step array. Ordered pipeline.
+  - ["Semantic check prompt"]           # SEMANTIC step
+  - [/command, Tool1, Tool2]            # COMMAND step
+  - [reviewer, 3]                       # REVIEW step (3 rounds)
+  - [reviewer, 3, fixer]               # REVIEW_WITH_FIXER step
+---
+```
+
+## Pipeline Step Types
+
+| Type | Format | Execution |
+|------|--------|-----------|
+| SEMANTIC | `["prompt text"]` | verification.js runs claude -p at SubagentStop |
+| COMMAND | `[/cmd, Tool1, Tool2]` | Block hook allows listed tools, /pass_or_revise records verdict |
+| REVIEW | `[agent, maxRounds]` | Block hook forces agent spawn, agent writes verdict |
+| REVIEW_WITH_FIXER | `[agent, maxRounds, fixer]` | Same as REVIEW; REVISE routes to fixer instead of source |
+
+## Pipeline State Machine
+
+```
+Pipeline: normal → revision → normal (cycle) → completed | failed
+Step:     pending → active → passed
+                           → revise (source re-runs) → active
+                           → fix (fixer runs) → active
+                           → failed (rounds exhausted)
+```
+
+Engine owns ALL transitions via `step(db, scope, { role, artifactVerdict, semanticVerdict })`.
+
+## Hook Execution Order
+
+```
+SessionStart          → install better-sqlite3 (once per session)
+PreToolUse (all)      → pipeline-block.js: block if pipeline active + verdict file processing
+PreToolUse:Agent      → pipeline-conditions.js: conditions check + step enforcement + scope registration
+SubagentStart         → pipeline-injection.js: create pipeline + inject output_filepath + role context
+  [agent runs]
+SubagentStop          → pipeline-verification.js: scope → role → semantic checks → engine.step()
+PostToolUse:Edit|Write→ edit-gate.js: track edits + run formatters
+PreToolUse:ExitPlanMode → plan-gate.js: require gater PASS before plan exit
+PostToolUse:ExitPlanMode → plan-gate-clear.js: clear gater verdicts
+PreToolUse:Bash       → commit-gate.js: validate before git commit
+Stop|StopFailure      → stop-gate.js: pipeline completeness + debug scan + cleanup
+```
 
 ## Key Invariants
 
-- Hooks in `hooks/hooks.json` use `${CLAUDE_PLUGIN_ROOT}/scripts/...` paths (except SessionStart which also uses `${CLAUDE_PLUGIN_DATA}`)
-- Gate logic: conditions check → injection → verification. All three scripts must stay in sync.
-- Keep `<agent_gate>` XML tag unchanged — backward compat with existing agent definitions.
-- `gates:` field requires SQLite (`better-sqlite3`). It is a hard dependency — install must succeed.
-- **Version bump required for every script change.** Plugin cache is keyed by version string — same version = no re-download = stale hooks with no warning.
+- Hooks use `${CLAUDE_PLUGIN_ROOT}/scripts/...` paths (except SessionStart → `${CLAUDE_PLUGIN_DATA}`)
+- Pipeline logic: conditions → injection → verification. All three scripts + engine must stay in sync.
+- `<agent_gate>` XML tag preserved for backward compat with agent definitions.
+- `better-sqlite3` is a hard dependency — install must succeed.
+- **Version bump required for every script change.** Plugin cache keyed by version string.
 
 ## Session State
 
-- All hooks require SQLite via `better-sqlite3` (hard dependency, no JSON fallback). Installed into `CLAUDE_PLUGIN_DATA` via SessionStart hook (persists across plugin updates).
-- DB module: `scripts/claude-gates-db.js`. Column names match JS property names (`max`, `outputFilepath`).
-- Migration: first `getDb()` call auto-imports existing JSON files into SQLite inside a transaction. Old files left in place (marker prevents re-migration).
-- Tables: `agents`, `gates`, `edits`, `tool_history`.
+- SQLite via `better-sqlite3`. Installed into `CLAUDE_PLUGIN_DATA` via SessionStart.
+- v3 DB module: `scripts/pipeline-db.js`. Tables: `pipeline_state`, `pipeline_steps`, `agents`, `edits`, `tool_history`.
+- v2 DB module: `scripts/claude-gates-db.js` (legacy, still used by plan-gate, edit-gate).
+- Engine module: `scripts/pipeline.js`. Exports: `createPipeline`, `step`, `getNextAction`, `getAllNextActions`, `resolveRole`.
 
 ## Configuration
 
 - Project-level config via `claude-gates.json` at repo root (optional).
 - Config module: `scripts/claude-gates-config.js`. Resolution: `CLAUDE_GATES_CONFIG` env var → git root → cwd → defaults.
-- Arrays are replaced, objects are merged. No config file = built-in defaults.
 
 ## Module Map
 
-- `claude-gates-shared.js` — frontmatter parsing (`extractFrontmatter`, `parseVerification`, `parseConditions`, `parseGates`, `requiresScope`, `findAgentMd`, `VERDICT_RE`). Zero deps.
-- `claude-gates-db.js` — SQLite session state (32 exports). Requires `better-sqlite3`. Gate operations: `initGates`, `getActiveGate`, `getReviseGate`, `getFixGate`, `passGate`, `reviseGate`, `fixGate`, `reactivateReviseGate`, `reactivateFixGate`.
-- `claude-gates-config.js` — Project-level config loader. Reads `claude-gates.json`, merges with defaults, caches per process.
-- `claude-gates-conditions.js` — PreToolUse:Agent. Checks `conditions:` (semantic pre-check), enforces `gates:` chain ordering, blocks missing scope for CG agents. Registers scope+cleared+pending atomically.
-- `claude-gates-injection.js` — SubagentStart. Reads pending, injects `output_filepath`. Enhances context for gate agents (`role=gate`) and fixer agents (`role=fixer`) with source artifact info.
-- `claude-gates-verification.js` — SubagentStop. Two-layer verification (or gates-only structural check), verdict recording, gate state machine transitions. Reads `agent_transcript_path` at SubagentStop for parallel-safe scope resolution. Hardcoded gater fallback: records verdict from `last_assistant_message` when no artifact file found (feeds plan-gate). Hook stderr goes to subagent transcripts (`~/.claude/projects/.../subagents/agent-{id}.jsonl`), not terminal.
-- `plan-gate.js` — PreToolUse:ExitPlanMode. Verdict-based: checks SQLite for gater PASS/CONVERGED. Auto-allows after 3 attempts.
-- `plan-gate-clear.js` — PostToolUse:ExitPlanMode. Clears gater verdicts after every plan exit so next plan requires fresh verification.
-- `commit-gate.js` — PreToolUse:Bash. Detects `git commit`, runs configured validation commands. Opt-in via `claude-gates.json`.
-- `edit-gate.js` — PostToolUse:Edit|Write. Tracks edited files + runs opt-in formatter commands (deduped per file). Config: `edit_gate.commands`.
-- `gate-block.js` — PreToolUse (no matcher = all tools). Blocks non-read tools when gate is active/revise/fix. Allows Read/Glob/Grep and spawning correct agent.
-- `stop-gate.js` — Stop + StopFailure. On normal Stop: artifact completeness + configurable debug scan + custom commands + commit nudge. On StopFailure (API error): deletes orphaned gate rows so `initGates` can recreate fresh on retry. Default mode: warn (stderr only).
+### v3 Pipeline (active hooks)
+- `pipeline-shared.js` — Unified `verification:` array parser + `findAgentMd` + `VERDICT_RE`. Zero deps.
+- `pipeline-db.js` — SQLite CRUD for `pipeline_state`, `pipeline_steps`, `agents`, `edits`, `tool_history`.
+- `pipeline.js` — State machine engine. `step()` accepts `{ role, artifactVerdict, semanticVerdict }`. Owns ALL transitions.
+- `pipeline-conditions.js` — PreToolUse:Agent. Conditions check + step enforcement + scope registration.
+- `pipeline-injection.js` — SubagentStart. Creates pipeline from `verification:` steps, injects `output_filepath` + role context.
+- `pipeline-verification.js` — SubagentStop. Scope resolution → role dispatch → semantic checks → `engine.step()`.
+- `pipeline-block.js` — PreToolUse (all). Blocks tools, reads COMMAND verdict files, allows expected agents.
+- `stop-gate.js` — Stop/StopFailure. Checks both v2 and v3 state. Cleans up orphaned pipelines on API error.
+
+### v2 Legacy (still used by plan-gate, edit-gate)
+- `claude-gates-shared.js` — v2 frontmatter parser (supports `gates:` format).
+- `claude-gates-db.js` — v2 SQLite module (gates table, agent table).
+- `claude-gates-config.js` — Config loader (shared with v3).
+
+### Unchanged hooks
+- `plan-gate.js` — PreToolUse:ExitPlanMode. Requires gater PASS/CONVERGED.
+- `plan-gate-clear.js` — PostToolUse:ExitPlanMode. Clears gater verdicts.
+- `commit-gate.js` — PreToolUse:Bash. Validates before `git commit`.
+- `edit-gate.js` — PostToolUse:Edit|Write. Tracks edits + formatters.
 
 ## Testing
 
 ```bash
-node scripts/claude-gates-test.js    # 300+ tests (SQLite)
+node scripts/pipeline-test.js         # 90+ v3 unit/integration tests
+node scripts/test-pipeline-e2e.js     # 20+ v3 end-to-end tests
+node scripts/claude-gates-test.js     # 300+ v2 tests (7 expected failures: hooks.json wiring + agent format)
 ```
-
-Tests are subprocess-based with temp dirs. Each test creates its own session directory and cleans up with `rmSync`.
