@@ -750,13 +750,37 @@ test("getAllNextActions empty after pipeline completes", () => {
   });
 });
 
-test("SEMANTIC-only pipeline: getAllNextActions returns semantic (non-blocking)", () => {
+test("SEMANTIC-only pipeline: getAllNextActions returns semantic action", () => {
   withDb(db => {
     engine.createPipeline(db, "s1", "worker", [{ type: "SEMANTIC", prompt: "A" }]);
     const actions = engine.getAllNextActions(db);
     assert.strictEqual(actions.length, 1);
     assert.strictEqual(actions[0].action, "semantic");
-    // Block hook should treat this as non-blocking (semantic runs at SubagentStop)
+    // pipeline-block treats semantic as blocking (source must re-run)
+  });
+});
+
+test("SEMANTIC action includes source_agent for pipeline-block", () => {
+  withDb(db => {
+    engine.createPipeline(db, "s1", "worker", [{ type: "SEMANTIC", prompt: "A" }]);
+    const actions = engine.getAllNextActions(db);
+    assert.strictEqual(actions[0].step.source_agent, "worker");
+    // pipeline-block uses step.source_agent when act.agent is null
+  });
+});
+
+test("SEMANTIC action blocks: source_agent resolvable from step", () => {
+  // Regression: pipeline-block didn't recognize "semantic" action, letting orchestrator bypass
+  withDb(db => {
+    engine.createPipeline(db, "fix-1", "fixer", [
+      { type: "SEMANTIC", prompt: "Check fix" },
+      { type: "REVIEW", agent: "reviewer", maxRounds: 3 },
+    ]);
+    const actions = engine.getAllNextActions(db);
+    const sem = actions.find(a => a.scope === "fix-1");
+    assert.strictEqual(sem.action, "semantic");
+    assert.strictEqual(sem.step.source_agent, "fixer");
+    // pipeline-block should treat this as: Resume fixer (scope=fix-1)
   });
 });
 

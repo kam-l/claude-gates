@@ -92,8 +92,9 @@ try {
 
   let hasBlockingActions = false;
   for (const act of actions) {
-    if (act.action === "spawn" || act.action === "source") {
-      expectedAgents.set(act.agent, { scope: act.scope, action: act });
+    if (act.action === "spawn" || act.action === "source" || act.action === "semantic") {
+      const agent = act.agent || (act.step && act.step.source_agent);
+      if (agent) expectedAgents.set(agent, { scope: act.scope, action: act });
       hasBlockingActions = true;
     } else if (act.action === "command") {
       for (const t of act.allowedTools || []) commandAllowedTools.add(t);
@@ -116,10 +117,11 @@ try {
   // Build block message — merge pending notifications into reason
   const parts = [];
   for (const act of actions) {
+    const agent = act.agent || (act.step && act.step.source_agent);
     if (act.action === "spawn") {
-      parts.push(`Spawn ${act.agent} (scope=${act.scope}, round ${act.round + 1}/${act.maxRounds}).`);
-    } else if (act.action === "source") {
-      parts.push(`Resume ${act.agent} (scope=${act.scope})${pending ? " — " + pending : "."}`);
+      parts.push(`Spawn ${agent} (scope=${act.scope}, round ${act.round + 1}/${act.maxRounds}).`);
+    } else if (act.action === "source" || act.action === "semantic") {
+      parts.push(`Resume ${agent} (scope=${act.scope})${pending ? " — " + pending : "."}`);
     } else if (act.action === "command") {
       parts.push(`Run ${act.command}, then /pass_or_revise (scope=${act.scope}).`);
     }
