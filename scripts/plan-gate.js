@@ -29,7 +29,7 @@ try {
   if (!sessionId) process.exit(0);
 
   const HOME = process.env.USERPROFILE || process.env.HOME || "";
-  const sessionDir = path.join(HOME, ".claude", "sessions", sessionId);
+  const sessionDir = path.join(process.cwd(), ".sessions", sessionId);
   const plansDir = path.join(HOME, ".claude", "plans");
 
   // ── Check for gater verdict (SQLite) ──

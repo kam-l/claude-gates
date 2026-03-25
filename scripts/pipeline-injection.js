@@ -17,14 +17,14 @@
 const fs = require("fs");
 const path = require("path");
 const { getDb, findAgentScope, getAgent, getActiveStep, getStepByStatus, getPipelineState } = require("./pipeline-db.js");
-const { parseVerification, findAgentMd } = require("./pipeline-shared.js");
+const { parseVerification, findAgentMd, getSessionDir } = require("./pipeline-shared.js");
 const engine = require("./pipeline.js");
 const msg = require("./messages.js");
 
+const HOME = process.env.USERPROFILE || process.env.HOME || "";
+
 try {
   const data = JSON.parse(fs.readFileSync(0, "utf-8"));
-  const HOME = process.env.USERPROFILE || process.env.HOME || "";
-
   const sessionId = data.session_id || "";
   const agentType = data.agent_type || "";
   const agentId = data.agent_id || "";
@@ -32,7 +32,7 @@ try {
   if (!sessionId || !agentType) process.exit(0);
 
   const bareAgentType = agentType.includes(":") ? agentType.split(":").pop() : agentType;
-  const sessionDir = path.join(HOME, ".claude", "sessions", sessionId).replace(/\\/g, "/");
+  const sessionDir = getSessionDir(sessionId);
 
   // Output path uses agent_id — unique per spawn, no collision possible.
   // SubagentStop moves this to {scope}/{agent_type}.md after resolving scope from transcript.

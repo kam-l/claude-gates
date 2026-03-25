@@ -43,7 +43,7 @@ function assert(cond, msg) {
 
 function isBlocked(r) { return r.stdout.includes('"block"'); }
 
-const sessionDir = path.join(HOME, ".claude", "sessions", "s1");
+const sessionDir = path.join(HOME, ".sessions", "s1");
 const scopeDir = path.join(sessionDir, "t1");
 fs.mkdirSync(scopeDir, { recursive: true });
 const norm = sessionDir.replace(/\\/g, "/");
@@ -90,9 +90,9 @@ assert(!isBlocked(run(CONDITIONS, { session_id: "s1", tool_input: { subagent_typ
   "builder unblocked after all gates");
 
 console.log("\n=== Revise Path ===");
-const s2Dir = path.join(HOME, ".claude", "sessions", "s2", "t2");
+const s2Dir = path.join(HOME, ".sessions", "s2", "t2");
 fs.mkdirSync(s2Dir, { recursive: true });
-const s2Norm = path.join(HOME, ".claude", "sessions", "s2").replace(/\\/g, "/");
+const s2Norm = path.join(HOME, ".sessions", "s2").replace(/\\/g, "/");
 
 run(CONDITIONS, { session_id: "s2", tool_input: { subagent_type: "builder", prompt: "scope=t2 Build" }});
 fs.writeFileSync(path.join(s2Dir, "builder.md"), "# Done\nResult: PASS\n");

@@ -33,8 +33,7 @@ try {
   const sessionId = data.session_id || "";
   if (!sessionId) process.exit(0);
 
-  const HOME = process.env.USERPROFILE || process.env.HOME || "";
-  const sessionDir = path.join(HOME, ".claude", "sessions", sessionId);
+  const sessionDir = path.join(process.cwd(), ".sessions", sessionId);
 
   // Open DB (v3 schema is a superset — getDb initializes both sets of tables)
   const db = v3Db ? v3Db.getDb(sessionDir) : (v2Db ? v2Db.getDb(sessionDir) : null);

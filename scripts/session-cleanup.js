@@ -2,7 +2,7 @@
 /**
  * Pipeline v3 — SessionStart cleanup.
  *
- * Prunes old session directories from ~/.claude/sessions/.
+ * Prunes old session directories from {CWD}/.sessions/ (and legacy ~/.claude/sessions/).
  * Deletes dirs where session.db is older than MAX_AGE_DAYS.
  * Skips the current session. Fail-open.
  */
@@ -18,30 +18,35 @@ try {
   const currentSession = data.session_id || "";
 
   const HOME = process.env.USERPROFILE || process.env.HOME || "";
-  const sessionsDir = path.join(HOME, ".claude", "sessions");
-
-  if (!fs.existsSync(sessionsDir)) process.exit(0);
+  const sessionsDirs = [
+    path.join(process.cwd(), ".sessions"),
+    path.join(HOME, ".claude", "sessions")  // legacy location
+  ];
 
   const now = Date.now();
   let pruned = 0;
 
-  for (const entry of fs.readdirSync(sessionsDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    if (entry.name === currentSession) continue;
+  for (const sessionsDir of sessionsDirs) {
+    if (!fs.existsSync(sessionsDir)) continue;
 
-    const dirPath = path.join(sessionsDir, entry.name);
-    const dbPath = path.join(dirPath, "session.db");
+    for (const entry of fs.readdirSync(sessionsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name === currentSession) continue;
 
-    // Only prune dirs that have a session.db (ours)
-    if (!fs.existsSync(dbPath)) continue;
+      const dirPath = path.join(sessionsDir, entry.name);
+      const dbPath = path.join(dirPath, "session.db");
 
-    try {
-      const stat = fs.statSync(dbPath);
-      if (now - stat.mtimeMs > MAX_AGE_MS) {
-        fs.rmSync(dirPath, { recursive: true, force: true });
-        pruned++;
-      }
-    } catch {} // skip on permission/lock errors
+      // Only prune dirs that have a session.db (ours)
+      if (!fs.existsSync(dbPath)) continue;
+
+      try {
+        const stat = fs.statSync(dbPath);
+        if (now - stat.mtimeMs > MAX_AGE_MS) {
+          fs.rmSync(dirPath, { recursive: true, force: true });
+          pruned++;
+        }
+      } catch {} // skip on permission/lock errors
+    }
   }
 
   if (pruned > 0) {

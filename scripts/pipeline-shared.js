@@ -10,6 +10,7 @@
  *   parseConditions(mdContent)        → string | null
  *   requiresScope(mdContent)          → boolean
  *   findAgentMd(agentType, projectRoot, home) → string | null
+ *   getSessionDir(sessionId)          → string  (CWD-based, forward-slash)
  *   VERDICT_RE                        → RegExp
  *
  * Step types:
@@ -207,4 +208,12 @@ function findAgentMd(agentType, projectRoot, home) {
   return null;
 }
 
-module.exports = { extractFrontmatter, parseVerification, parseConditions, requiresScope, findAgentMd, VERDICT_RE };
+/**
+ * Session directory — project-local .sessions/{id}/, avoids ~/.claude/ permission prompts.
+ * Forward-slash-normalized for cross-platform output_filepath consistency.
+ */
+function getSessionDir(sessionId) {
+  return path.join(process.cwd(), ".sessions", sessionId).replace(/\\/g, "/");
+}
+
+module.exports = { extractFrontmatter, parseVerification, parseConditions, requiresScope, findAgentMd, getSessionDir, VERDICT_RE };

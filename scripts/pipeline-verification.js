@@ -27,7 +27,7 @@
 const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
-const { parseVerification, findAgentMd, VERDICT_RE } = require("./pipeline-shared.js");
+const { parseVerification, findAgentMd, VERDICT_RE, getSessionDir } = require("./pipeline-shared.js");
 const crud = require("./pipeline-db.js");
 const engine = require("./pipeline.js");
 const msg = require("./messages.js");
@@ -182,7 +182,7 @@ try {
 
   const agentId = data.agent_id || "unknown";
   const sessionId = data.session_id || "unknown";
-  const sessionDir = path.join(HOME, ".claude", "sessions", sessionId);
+  const sessionDir = getSessionDir(sessionId);
   const lastMessage = data.last_assistant_message || "";
 
   // ── Gater hardcoded fallback ──

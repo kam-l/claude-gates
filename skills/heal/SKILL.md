@@ -10,9 +10,8 @@ Pipeline-block hooks block tool calls in the stuck session. ALL database command
 
 1. **Resolve session ID.** Use `$ARGUMENTS` if provided. Otherwise, check if the current session is stuck (most common case) — the session ID is in the conversation context. Only ask if neither is available.
 
-2. **Build the `! ...` diagnostic command** with the real DB path substituted (forward slashes regardless of OS):
-   - Windows: `C:/Users/{USERNAME}/.claude/sessions/{SESSION_ID}/session.db`
-   - macOS/Linux: `~/.claude/sessions/{SESSION_ID}/session.db`
+2. **Build the `! ...` diagnostic command** with the real DB path substituted (forward slashes regardless of OS).
+   Session data lives under the project root: `{CWD}/.sessions/{SESSION_ID}/session.db`
 
    The `better-sqlite3` require resolves via `CLAUDE_PLUGIN_DATA`:
    ```

@@ -17,7 +17,7 @@ const fs = require("fs");
 const path = require("path");
 const { getDb } = require("./pipeline-db.js");
 const engine = require("./pipeline.js");
-const { VERDICT_RE } = require("./pipeline-shared.js");
+const { VERDICT_RE, getSessionDir } = require("./pipeline-shared.js");
 const msg = require("./messages.js");
 
 const ALLOWED_TOOLS = ["Read", "Glob", "Grep", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage"];
@@ -32,8 +32,7 @@ try {
   const toolInput = data.tool_input || {};
   const callerAgent = data.agent_type || "";
 
-  const HOME = process.env.USERPROFILE || process.env.HOME || "";
-  const sessionDir = path.join(HOME, ".claude", "sessions", sessionId);
+  const sessionDir = getSessionDir(sessionId);
 
   // Surface queued notifications from SubagentStop (side-channel)
   const pending = msg.drainNotifications(sessionDir);

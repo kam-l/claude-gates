@@ -13,11 +13,11 @@
 - Backward compat: keep parsing old `gates:` + `verification:` format
 - Rename internal `parseGates` → `parseChains` (alias old name)
 
-## Fix output_filepath to use project-local path
-- Change injection.js `output_filepath` from `~/.claude/sessions/{id}/` to `{CWD}/.claude/gate-artifacts/{id}/`
-- Prevents project-level path guards (like guard_file_paths.js) from blocking gate agent writes
-- Update verification.js to match
-- DB stays at `~/.claude/sessions/` (Node.js fs, not affected by PreToolUse hooks)
+## ~~Fix output_filepath to use project-local path~~ DONE
+- Moved all session data (artifacts + DB) from `~/.claude/sessions/{id}/` to `{CWD}/.sessions/{id}/`
+- Shared `getSessionDir()` in pipeline-shared.js, replaces 11 hardcoded path constructions
+- session-cleanup.js sweeps both new and legacy locations
+- `.sessions/` added to .gitignore
 
 ## ~~Fix: gate rows not cleared after final PASS~~ DONE
 - Root cause: verification hook's no-verification block only handled fixers/sources, not gate agents

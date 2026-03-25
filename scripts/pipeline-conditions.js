@@ -21,7 +21,7 @@
 const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
-const { parseConditions, requiresScope, findAgentMd } = require("./pipeline-shared.js");
+const { parseConditions, requiresScope, findAgentMd, getSessionDir } = require("./pipeline-shared.js");
 const { getDb, registerAgent } = require("./pipeline-db.js");
 const engine = require("./pipeline.js");
 const msg = require("./messages.js");
@@ -74,7 +74,7 @@ try {
   // Session dir
   const sessionId = data.session_id || "";
   if (!sessionId) process.exit(0);
-  const sessionDir = path.join(HOME, ".claude", "sessions", sessionId);
+  const sessionDir = getSessionDir(sessionId);
 
   // ── Semantic pre-check (conditions:) ──
   const conditions = parseConditions(mdContent);

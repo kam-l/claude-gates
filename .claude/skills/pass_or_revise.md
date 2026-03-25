@@ -32,8 +32,8 @@ Run the command (e.g., `/question`), interact with the user, then invoke `/pass_
 
 ## Example
 
-If the block message said `Write verdict to: /home/user/.claude/sessions/abc123/my-scope/.command-verdict.md`:
+If the block message said `Write verdict to: .sessions/abc123/my-scope/.command-verdict.md`:
 ```
-Write to: /home/user/.claude/sessions/abc123/my-scope/.command-verdict.md
+Write to: .sessions/abc123/my-scope/.command-verdict.md
 Content: Result: PASS
 ```

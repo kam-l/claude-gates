@@ -544,9 +544,11 @@ test("gt-worker requiresScope returns true", () => {
 // Cleanup
 cleanup(tempRoot);
 
+// Session data now lives under {cwd}/.sessions/ — tempRoot cleanup handles it.
+// Also clean legacy location in case of leftover data.
 const HOME = process.env.USERPROFILE || process.env.HOME || "";
-const sessDir = path.join(HOME, ".claude", "sessions", sessionId);
-cleanup(sessDir);
+const legacySessDir = path.join(HOME, ".claude", "sessions", sessionId);
+cleanup(legacySessDir);
 
 console.log(`\n${"=".repeat(50)}`);
 console.log(`${pass} passed, ${fail} failed`);

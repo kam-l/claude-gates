@@ -26,8 +26,7 @@ try {
   const sessionId = data.session_id || "";
   if (!sessionId) process.exit(0);
 
-  const HOME = process.env.USERPROFILE || process.env.HOME || "";
-  const sessionDir = path.join(HOME, ".claude", "sessions", sessionId);
+  const sessionDir = path.join(process.cwd(), ".sessions", sessionId);
 
   // Extract file_path from tool_input (Edit/Write both use file_path)
   const toolInput = data.tool_input || {};

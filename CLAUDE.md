@@ -41,7 +41,8 @@ conditions: |                         # Pre-spawn check (blocks on FAIL)
 
 ## Session State
 
-- SQLite via `better-sqlite3` in `CLAUDE_PLUGIN_DATA`.
+- Session data (DB + artifacts) at `{CWD}/.sessions/{sessionId}/`. Shared helper: `getSessionDir()` in `pipeline-shared.js`.
+- SQLite via `better-sqlite3`. `session-cleanup.js` sweeps both `.sessions/` and legacy `~/.claude/sessions/`.
 - Engine: `scripts/pipeline.js` — owns ALL state transitions via `step()`.
 - v3 DB: `scripts/pipeline-db.js` — tables: `pipeline_state`, `pipeline_steps`, `agents`, `edits`, `tool_history`.
 - Supporting: `claude-gates-db.js` (plan-gate, edit-gate), `claude-gates-config.js` (stop-gate, commit-gate).
