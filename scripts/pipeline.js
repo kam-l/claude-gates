@@ -104,7 +104,7 @@ function step(db, scope, input) {
   }
 
   // UNKNOWN — log warning, treat as PASS (fail-open)
-  process.stderr.write(`[Pipeline] Unknown verdict "${artifactVerdict}" for scope="${scope}" step ${activeStep.step_index}. Treating as PASS (fail-open).\n`);
+  process.stderr.write(`[ClaudeGates] ⚠️ engine: Unknown verdict "${artifactVerdict}" for scope="${scope}" step ${activeStep.step_index}. Treating as PASS.\n`);
   return advance(db, scope, activeStep);
 }
 

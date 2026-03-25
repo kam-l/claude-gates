@@ -45,7 +45,7 @@ try {
   }
 
   if (pruned > 0) {
-    process.stderr.write(`[Pipeline] Cleaned ${pruned} session(s) older than ${MAX_AGE_DAYS} days.\n`);
+    process.stderr.write(`[ClaudeGates] 🧹 cleanup: Pruned ${pruned} session(s) older than ${MAX_AGE_DAYS} days.\n`);
   }
   process.exit(0);
 } catch {

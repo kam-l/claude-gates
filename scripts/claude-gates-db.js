@@ -60,7 +60,7 @@ try {
       ? "ABI mismatch — rebuild with: cd \"" + dataDir + "\" && npm rebuild better-sqlite3"
       : "Run \"npm install\" in the plugin data directory.";
     process.stderr.write(
-      `[ClaudeGates] FATAL: better-sqlite3 failed to load. ${hint}\n` +
+      `[ClaudeGates] ❌ db: better-sqlite3 failed to load. ${hint}\n` +
       `  Plugin path: ${pluginDir}\n` +
       `  Data dir: ${dataDir || "(CLAUDE_PLUGIN_DATA not set)"}\n` +
       (loadError ? `  Error: ${loadError.message}\n` : "")

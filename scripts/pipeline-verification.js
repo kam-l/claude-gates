@@ -30,6 +30,7 @@ const { execSync } = require("child_process");
 const { parseVerification, findAgentMd, VERDICT_RE } = require("./pipeline-shared.js");
 const crud = require("./pipeline-db.js");
 const engine = require("./pipeline.js");
+const msg = require("./messages.js");
 
 const PROJECT_ROOT = process.cwd();
 const HOME = process.env.USERPROFILE || process.env.HOME || "";
@@ -163,8 +164,8 @@ function gatherScopeContext(sessionDir, scope, agentType) {
   return context;
 }
 
-function block(reason) {
-  process.stdout.write(JSON.stringify({ decision: "block", reason: `[Pipeline] ${reason}` }));
+function blockVerify(reason) {
+  process.stdout.write(JSON.stringify({ decision: "block", reason: msg.fmt("🔒", "verify", reason) }));
 }
 
 // ── Main ─────────────────────────────────────────────────────────────
@@ -263,7 +264,7 @@ try {
       if (mdContent) {
         const steps = parseVerification(mdContent);
         if (steps && !scope) {
-          block(`Agent "${bareAgentType}" has verification: but no scope was found. Write your artifact to the output_filepath from <agent_gate> with a Result: PASS/FAIL line.`);
+          blockVerify(`Agent "${bareAgentType}" has verification: but no scope. Write to output_filepath with a Result: line.`);
         }
       }
       process.exit(0);
@@ -273,7 +274,7 @@ try {
     if (!artifactPath || !fs.existsSync(artifactPath)) {
       if (scope) {
         const expectedPath = `${sessionDir.replace(/\\/g, "/")}/${scope}/${bareAgentType}.md`;
-        block(`Write your artifact to ${expectedPath} before stopping. Include a Result: PASS or Result: FAIL line.`);
+        blockVerify(`Write artifact to ${expectedPath} before stopping. Include a Result: PASS or Result: FAIL line.`);
       }
       process.exit(0);
     }
@@ -282,7 +283,7 @@ try {
 
     // Layer 1: Result: line must exist
     if (!VERDICT_RE.test(artifactContent)) {
-      block(`Your ${bareAgentType}.md is missing a Result: line. Add 'Result: PASS' or 'Result: FAIL' as a standalone line.`);
+      blockVerify(`${bareAgentType}.md missing Result: line. Add "Result: PASS" or "Result: FAIL".`);
       process.exit(0);
     }
 
@@ -308,7 +309,7 @@ try {
 
   process.exit(0);
 } catch (err) {
-  process.stderr.write(`[Pipeline verification] Error: ${err.message}\n`);
+  msg.log("⚠️", "verify", `Error: ${err.message}`);
   process.exit(0); // fail-open
 }
 
@@ -324,7 +325,7 @@ function handleSource(db, scope, agentType, artifactPath, artifactContent, artif
     // Otherwise (REVIEW/COMMAND/done), log and return — no semantic check needed.
     if (!nextAction || nextAction.action !== "semantic") {
       recordVerdict(db, scope, agentType, artifactVerdict);
-      logAction(nextAction, scope, agentType);
+      logAction(sessionDir, nextAction, scope);
       return;
     }
     // Fall through: SEMANTIC step reactivated, run the check now
@@ -347,11 +348,11 @@ function handleSource(db, scope, agentType, artifactPath, artifactContent, artif
 
   // Engine call — for normal state, processes verdict on active step
   const nextAction = engine.step(db, scope, { role: "source", artifactVerdict: finalVerdict, semanticVerdict });
-  logAction(nextAction, scope, agentType);
+  logAction(sessionDir, nextAction, scope);
 
   if (finalVerdict === "FAIL") {
     const reason = semanticResult && semanticResult.reason ? semanticResult.reason : "Semantic validation failed";
-    process.stderr.write(`[Pipeline] FAIL: ${path.basename(artifactPath)} — ${reason}. Resume or re-spawn ${agentType} with scope=${scope} to fix.\n`);
+    msg.notify(sessionDir, "❌", "verify", `FAIL — ${reason}. Re-spawn ${agentType} with scope=${scope}.`);
     process.exit(2);
   }
 }
@@ -370,7 +371,7 @@ function handleGateAgent(db, scope, agentType, artifactPath, artifactContent, ar
 
   // Single engine call — engine handles gate-retry (semantic FAIL) vs normal step
   const nextAction = engine.step(db, scope, { role: "gate-agent", artifactVerdict, semanticVerdict });
-  logAction(nextAction, scope, agentType);
+  logAction(sessionDir, nextAction, scope);
 
   if (semanticVerdict === "FAIL") {
     process.exit(2);
@@ -390,27 +391,27 @@ function handleFixer(db, scope, agentType, artifactPath, artifactContent, artifa
 
   // Single engine call — engine always reactivates the revision step for fixers
   const nextAction = engine.step(db, scope, { role: "fixer", artifactVerdict, semanticVerdict });
-  logAction(nextAction, scope, agentType);
+  logAction(sessionDir, nextAction, scope);
 }
 
 // ── Logging helper ───────────────────────────────────────────────────
 
-function logAction(action, scope, agentType) {
+function logAction(sessionDir, action, scope) {
   if (!action) return;
   switch (action.action) {
     case "done":
-      process.stderr.write(`[Pipeline] All steps passed for scope "${scope}". Pipeline complete.\n`);
+      msg.notify(sessionDir, "✅", "verify", `All steps passed (scope=${scope}). Pipeline complete.`);
       break;
     case "failed":
-      process.stderr.write(`[Pipeline] Pipeline FAILED for scope "${scope}" at step ${action.step ? action.step.step_index : "?"}.\n`);
+      msg.notify(sessionDir, "❌", "verify", `Pipeline FAILED (scope=${scope}) at step ${action.step ? action.step.step_index : "?"}.`);
       break;
     case "spawn":
-      process.stderr.write(`[Pipeline] Next: spawn ${action.agent} (scope=${scope}, round ${action.round + 1}/${action.maxRounds}).\n`);
+      msg.notify(sessionDir, "🔄", "verify", `Next: spawn ${action.agent} (scope=${scope}, round ${action.round + 1}/${action.maxRounds}).`);
       break;
     case "source":
-      process.stderr.write(`[Pipeline] Next: ${action.agent} (scope=${scope}).\n`);
+      msg.notify(sessionDir, "🔄", "verify", `Next: ${action.agent} (scope=${scope}).`);
       break;
     default:
-      process.stderr.write(`[Pipeline] Next: ${action.action} (scope=${scope}).\n`);
+      msg.notify(sessionDir, "⚡", "verify", `Next: ${action.action} (scope=${scope}).`);
   }
 }

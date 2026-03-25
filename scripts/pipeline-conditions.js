@@ -24,6 +24,7 @@ const { execSync } = require("child_process");
 const { parseConditions, requiresScope, findAgentMd } = require("./pipeline-shared.js");
 const { getDb, registerAgent } = require("./pipeline-db.js");
 const engine = require("./pipeline.js");
+const msg = require("./messages.js");
 
 const HOME = process.env.USERPROFILE || process.env.HOME || "";
 const PROJECT_ROOT = process.cwd();
@@ -59,10 +60,7 @@ try {
   // No scope handling
   if (!scope) {
     if (mdContent && requiresScope(mdContent)) {
-      process.stdout.write(JSON.stringify({
-        decision: "block",
-        reason: `[Pipeline] Agent "${bareAgentType}" has verification/conditions fields but was spawned without scope=<name>. Add scope=<name> to the prompt.`
-      }));
+      msg.block("🔒", "conditions", `Agent "${bareAgentType}" needs scope=<name>. Add it to the spawn prompt.`);
     }
     process.exit(0);
   }
@@ -99,16 +97,13 @@ try {
       const condMatch = /^(PASS|FAIL)(?:[:\s\u2014\u2013-]+(.*))?$/i.exec(condLast);
       if (condMatch && condMatch[1].toUpperCase() === "FAIL") {
         const reason = condMatch[2] ? condMatch[2].trim() : "Pre-spawn conditions check failed";
-        process.stdout.write(JSON.stringify({
-          decision: "block",
-          reason: `[Pipeline] Conditions check failed for ${bareAgentType}: ${reason}`
-        }));
+        msg.block("🔒", "conditions", `Failed for ${bareAgentType}: ${reason}`);
         process.exit(0);
       }
-      process.stderr.write(`[Pipeline] Conditions: ${condMatch ? condMatch[1].toUpperCase() : "UNKNOWN"} for ${bareAgentType}\n`);
+      msg.log("✅", "conditions", `${condMatch ? condMatch[1].toUpperCase() : "UNKNOWN"} for ${bareAgentType}`);
     } catch {
       // Semantic check failed — fail-open
-      process.stderr.write(`[Pipeline] Conditions check skipped for ${bareAgentType} (claude -p unavailable)\n`);
+      msg.log("⚠️", "conditions", `Skipped for ${bareAgentType} (claude -p unavailable)`);
     }
   }
 
@@ -125,20 +120,14 @@ try {
         // spawn/source → only the expected agent
         if (scopeAction.action === "spawn" || scopeAction.action === "source") {
           if (scopeAction.agent !== bareAgentType) {
-            process.stdout.write(JSON.stringify({
-              decision: "block",
-              reason: `[Pipeline] Scope "${scope}" expects "${scopeAction.agent}", not "${bareAgentType}". Spawn ${scopeAction.agent} with scope=${scope}.`
-            }));
+            msg.block("🔒", "conditions", `Scope "${scope}" expects "${scopeAction.agent}", not "${bareAgentType}". Spawn ${scopeAction.agent}.`);
             db.close();
             process.exit(0);
           }
         }
         // command → block agent spawns (command runs inline)
         else if (scopeAction.action === "command") {
-          process.stdout.write(JSON.stringify({
-            decision: "block",
-            reason: `[Pipeline] Scope "${scope}" has active COMMAND step "${scopeAction.command}". Run the command, then /pass_or_revise. Do not spawn agents.`
-          }));
+          msg.block("🔒", "conditions", `Scope "${scope}" has active COMMAND "${scopeAction.command}". Run it, then /pass_or_revise.`);
           db.close();
           process.exit(0);
         }
@@ -169,6 +158,6 @@ try {
   process.exit(0);
 } catch (err) {
   // Fail-open
-  process.stderr.write(`[Pipeline conditions] Error: ${err.message}\n`);
+  msg.log("⚠️", "conditions", `Error: ${err.message}`);
   process.exit(0);
 }

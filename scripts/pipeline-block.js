@@ -8,11 +8,7 @@
  *   - Spawning an agent that matches ANY active pipeline's expected agent
  *   - Tools listed in a COMMAND step's allowedTools (+ Skill always allowed for /pass_or_revise)
  *
- * COMMAND verdict file signaling:
- *   /pass_or_revise writes {scope}/.command-verdict.md
- *   This hook reads it on next PreToolUse, feeds verdict to engine, deletes file.
- *
- * Scope-aware: supports parallel pipelines via engine.getAllNextActions().
+ * Also surfaces queued notifications from SubagentStop via systemMessage.
  *
  * Fail-open: no session / no DB / no active pipeline → allow.
  */
@@ -22,6 +18,7 @@ const path = require("path");
 const { getDb } = require("./pipeline-db.js");
 const engine = require("./pipeline.js");
 const { VERDICT_RE } = require("./pipeline-shared.js");
+const msg = require("./messages.js");
 
 const ALLOWED_TOOLS = ["Read", "Glob", "Grep", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage"];
 
@@ -38,16 +35,20 @@ try {
   const HOME = process.env.USERPROFILE || process.env.HOME || "";
   const sessionDir = path.join(HOME, ".claude", "sessions", sessionId);
 
+  // Surface queued notifications from SubagentStop (side-channel)
+  const pending = msg.drainNotifications(sessionDir);
+
   const db = getDb(sessionDir);
-  if (!db) process.exit(0);
+  if (!db) {
+    if (pending) msg.info("", "", pending.replace(/\[ClaudeGates\] /g, ""));
+    process.exit(0);
+  }
 
   let actions;
   try {
     actions = engine.getAllNextActions(db);
 
     // ── COMMAND verdict file processing ──
-    // Check for verdict files written by /pass_or_revise skill.
-    // If found, feed verdict to engine and re-query actions.
     let verdictProcessed = false;
     for (const act of actions) {
       if (act.action !== "command") continue;
@@ -61,14 +62,12 @@ try {
         engine.step(db, act.scope, { role: null, artifactVerdict: verdict });
         fs.unlinkSync(verdictPath);
         verdictProcessed = true;
-        process.stderr.write(`[Pipeline] COMMAND verdict: ${verdict} for scope="${act.scope}". Pipeline advanced.\n`);
+        msg.log("⚡", "block", `COMMAND verdict ${verdict} for scope="${act.scope}". Advanced.`);
       } catch (e) {
-        // Verdict file read/process failed — leave it for next cycle
-        process.stderr.write(`[Pipeline] Verdict file error for scope="${act.scope}": ${e.message}\n`);
+        msg.log("⚠️", "block", `Verdict file error for scope="${act.scope}": ${e.message}`);
       }
     }
 
-    // Re-query if any verdict was processed (steps may have advanced)
     if (verdictProcessed) {
       actions = engine.getAllNextActions(db);
     }
@@ -76,17 +75,20 @@ try {
     db.close();
   }
 
-  if (!actions || actions.length === 0) process.exit(0);
+  // No active pipeline — surface any pending notifications and allow
+  if (!actions || actions.length === 0) {
+    if (pending) process.stdout.write(JSON.stringify({ systemMessage: pending }));
+    process.exit(0);
+  }
 
-  // Subagent calls are gated by SubagentStop, not here.
-  // Blocking them causes cross-scope deadlocks with parallel pipelines.
+  // Subagent calls gated by SubagentStop, not here
   if (callerAgent) process.exit(0);
 
   // Read-only + progress tracking tools always allowed
   if (ALLOWED_TOOLS.includes(toolName)) process.exit(0);
 
-  // Build expected agents and allowed tools from all active actions
-  const expectedAgents = new Map(); // agent_type → { scope, action }
+  // Build expected agents and allowed tools
+  const expectedAgents = new Map();
   const commandAllowedTools = new Set();
 
   let hasBlockingActions = false;
@@ -95,52 +97,43 @@ try {
       expectedAgents.set(act.agent, { scope: act.scope, action: act });
       hasBlockingActions = true;
     } else if (act.action === "command") {
-      for (const t of act.allowedTools || []) {
-        commandAllowedTools.add(t);
-      }
-      // Always allow Skill tool for COMMAND steps (/pass_or_revise)
+      for (const t of act.allowedTools || []) commandAllowedTools.add(t);
       commandAllowedTools.add("Skill");
       hasBlockingActions = true;
     }
-    // semantic → non-blocking (processed synchronously at SubagentStop, not via agent spawn)
-    // done → non-blocking (pipeline complete)
   }
 
-  // If only semantic/done actions remain, don't block — these are transient states
-  if (!hasBlockingActions) process.exit(0);
+  if (!hasBlockingActions) {
+    if (pending) process.stdout.write(JSON.stringify({ systemMessage: pending }));
+    process.exit(0);
+  }
 
-  // Agent tool: allow spawning any expected agent across all scopes
+  // Agent tool: allow expected agents
   if (toolName === "Agent") {
     const subagentType = toolInput.subagent_type || "";
     if (expectedAgents.has(subagentType)) process.exit(0);
   }
 
-  // COMMAND step: allow listed tools + Skill
+  // COMMAND step: allow listed tools
   if (commandAllowedTools.has(toolName)) process.exit(0);
 
-  // Build shield UI message
+  // Build block message
   const parts = [];
   for (const act of actions) {
     if (act.action === "spawn") {
-      parts.push(`\`${act.agent}\` (scope=${act.scope}, round ${act.round + 1}/${act.maxRounds})`);
+      parts.push(`Spawn ${act.agent} (scope=${act.scope}, round ${act.round + 1}/${act.maxRounds}).`);
     } else if (act.action === "source") {
-      parts.push(`\`${act.agent}\` (scope=${act.scope})`);
+      parts.push(`Spawn ${act.agent} (scope=${act.scope}).`);
     } else if (act.action === "command") {
-      const verdictPath = path.join(sessionDir, act.scope, ".command-verdict.md").replace(/\\/g, "/");
-      parts.push(`COMMAND \`${act.command}\` (scope=${act.scope}) — Run ${act.command}, then /pass_or_revise. Write verdict to: ${verdictPath}`);
-    } else if (act.action === "semantic") {
-      parts.push(`semantic check pending (scope=${act.scope})`);
+      parts.push(`Run ${act.command}, then /pass_or_revise (scope=${act.scope}).`);
     }
   }
 
-  const msg = parts.length > 0
-    ? `[Pipeline] ${parts.join(", ")}.`
-    : `[Pipeline] Pipeline active — waiting for step completion.`;
-
-  process.stdout.write(JSON.stringify({
-    decision: "block",
-    reason: msg
-  }));
+  const reason = parts.join(" ");
+  const out = { decision: "block", reason: msg.fmt("🔒", "block", reason) };
+  if (pending) out.systemMessage = pending;
+  else out.systemMessage = msg.fmt("🔒", "block", reason);
+  process.stdout.write(JSON.stringify(out));
   process.exit(0);
 } catch {
   process.exit(0); // fail-open

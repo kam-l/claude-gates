@@ -52,9 +52,7 @@ try {
           const del = db.prepare("DELETE FROM gates WHERE scope = ?");
           const tx = db.transaction(() => { for (const s of scopes) del.run(s); });
           tx();
-          process.stderr.write(
-            `[Pipeline] API error (${data.error}): cleared v2 gates for ${scopes.length} scope(s).\n`
-          );
+          process.stderr.write(`[ClaudeGates] 🧹 stop: API error — cleared v2 gates for ${scopes.length} scope(s).\n`);
         }
       } catch {} // v2 table may not exist
 
@@ -73,9 +71,7 @@ try {
             }
           });
           tx();
-          process.stderr.write(
-            `[Pipeline] API error (${data.error}): cleared pipelines for ${pipelines.length} scope(s) — will reinitialize on retry.\n`
-          );
+          process.stderr.write(`[ClaudeGates] 🧹 stop: API error — cleared ${pipelines.length} pipeline(s). Will reinitialize on retry.\n`);
         }
       } catch {} // v3 table may not exist
     } catch {}
@@ -245,13 +241,11 @@ try {
       else if (v2Db) v2Db.registerAgent(db, "_nudge", "stop-gate", null);
     } catch {}
     db.close();
-    process.stdout.write(JSON.stringify({
-      decision: "block",
-      reason: `[Pipeline] ${summary}\nClean up or stop again to proceed.`
-    }));
+    const reason = `[ClaudeGates] ⚠️ stop: ${summary}\nClean up or stop again to proceed.`;
+    process.stdout.write(JSON.stringify({ decision: "block", reason, systemMessage: reason }));
   } else {
     db.close();
-    process.stderr.write(`[Pipeline] ${summary}\n`);
+    process.stderr.write(`[ClaudeGates] ⚠️ stop: ${summary}\n`);
   }
   process.exit(0);
 } catch {

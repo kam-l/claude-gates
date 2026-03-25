@@ -19,6 +19,7 @@ const path = require("path");
 const { getDb, findAgentScope, getAgent, getActiveStep, getStepByStatus, getPipelineState } = require("./pipeline-db.js");
 const { parseVerification, findAgentMd } = require("./pipeline-shared.js");
 const engine = require("./pipeline.js");
+const msg = require("./messages.js");
 
 try {
   const data = JSON.parse(fs.readFileSync(0, "utf-8"));
@@ -54,9 +55,7 @@ try {
         const steps = parseVerification(mdContent);
         if (steps) {
           engine.createPipeline(db, scope, bareAgentType, steps);
-          process.stderr.write(
-            `[Pipeline] Initialized ${steps.length} step(s) for scope "${scope}": ${steps.map(s => s.type).join(" → ")}.\n`
-          );
+          msg.notify(sessionDir, "⚡", "pipeline", `Initialized ${steps.length} step(s) for scope="${scope}": ${steps.map(s => s.type).join(" → ")}.`);
         }
       }
 
