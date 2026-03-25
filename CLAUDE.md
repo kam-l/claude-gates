@@ -37,6 +37,7 @@ conditions: |                         # Pre-spawn check (blocks on FAIL)
 - `<agent_gate>` XML tag preserved for backward compat.
 - `better-sqlite3` is a hard dependency — installed via SessionStart hook.
 - Fail-open: every hook catches errors and exits 0.
+- **All hooks MUST exit 0.** Exit 2 causes Claude Code to ignore stdout JSON (including `systemMessage`). Use `msg.notify()` file side-channel for SubagentStop messages, not exit codes.
 
 ## Session State
 

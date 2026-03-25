@@ -353,7 +353,6 @@ function handleSource(db, scope, agentType, artifactPath, artifactContent, artif
   if (finalVerdict === "FAIL") {
     const reason = semanticResult && semanticResult.reason ? semanticResult.reason : "Semantic validation failed";
     msg.notify(sessionDir, "❌", `FAIL — ${reason}. Re-spawn ${agentType} with scope=${scope}.`);
-    process.exit(2);
   }
 }
 
@@ -373,9 +372,6 @@ function handleGateAgent(db, scope, agentType, artifactPath, artifactContent, ar
   const nextAction = engine.step(db, scope, { role: "gate-agent", artifactVerdict, semanticVerdict });
   logAction(sessionDir, nextAction, scope);
 
-  if (semanticVerdict === "FAIL") {
-    process.exit(2);
-  }
 }
 
 function handleFixer(db, scope, agentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir) {
