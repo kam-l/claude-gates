@@ -77,7 +77,6 @@ try {
 
   // No active pipeline — surface any pending notifications and allow
   if (!actions || actions.length === 0) {
-    if (pending) process.stdout.write(JSON.stringify({ systemMessage: pending }));
     process.exit(0);
   }
 
@@ -103,10 +102,7 @@ try {
     }
   }
 
-  if (!hasBlockingActions) {
-    if (pending) process.stdout.write(JSON.stringify({ systemMessage: pending }));
-    process.exit(0);
-  }
+  if (!hasBlockingActions) process.exit(0);
 
   // Agent tool: allow expected agents
   if (toolName === "Agent") {
@@ -117,13 +113,13 @@ try {
   // COMMAND step: allow listed tools
   if (commandAllowedTools.has(toolName)) process.exit(0);
 
-  // Build block message
+  // Build block message — merge pending notifications into reason
   const parts = [];
   for (const act of actions) {
     if (act.action === "spawn") {
       parts.push(`Spawn ${act.agent} (scope=${act.scope}, round ${act.round + 1}/${act.maxRounds}).`);
     } else if (act.action === "source") {
-      parts.push(`Spawn ${act.agent} (scope=${act.scope}).`);
+      parts.push(`Resume ${act.agent} (scope=${act.scope})${pending ? " — " + pending : "."}`);
     } else if (act.action === "command") {
       parts.push(`Run ${act.command}, then /pass_or_revise (scope=${act.scope}).`);
     }
@@ -131,7 +127,6 @@ try {
 
   const reason = parts.join(" ");
   const out = { decision: "block", reason: msg.fmt("🔒", reason) };
-  if (pending) out.systemMessage = pending;
   process.stdout.write(JSON.stringify(out));
   process.exit(0);
 } catch {

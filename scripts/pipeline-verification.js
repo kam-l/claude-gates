@@ -352,7 +352,7 @@ function handleSource(db, scope, agentType, artifactPath, artifactContent, artif
 
   if (finalVerdict === "FAIL") {
     const reason = semanticResult && semanticResult.reason ? semanticResult.reason : "Semantic validation failed";
-    msg.notify(sessionDir, "❌", `FAIL — ${reason}. Re-spawn ${agentType} with scope=${scope}.`);
+    msg.notify(sessionDir, "", `${reason}`);
   }
 }
 
@@ -394,20 +394,11 @@ function handleFixer(db, scope, agentType, artifactPath, artifactContent, artifa
 
 function logAction(sessionDir, action, scope) {
   if (!action) return;
-  switch (action.action) {
-    case "done":
-      msg.notify(sessionDir, "✅", `All steps passed (scope=${scope}). Pipeline complete.`);
-      break;
-    case "failed":
-      msg.notify(sessionDir, "❌", `Pipeline FAILED (scope=${scope}) at step ${action.step ? action.step.step_index : "?"}.`);
-      break;
-    case "spawn":
-      msg.notify(sessionDir, "🔄", `Next: spawn ${action.agent} (scope=${scope}, round ${action.round + 1}/${action.maxRounds}).`);
-      break;
-    case "source":
-      msg.notify(sessionDir, "🔄", `Next: ${action.agent} (scope=${scope}).`);
-      break;
-    default:
-      msg.notify(sessionDir, "⚡", `Next: ${action.action} (scope=${scope}).`);
-  }
+  // Stderr only — pipeline-block.js owns the user/Claude-facing block message.
+  const a = action.action;
+  if (a === "done")         msg.log("✅", `Pipeline complete (scope=${scope}).`);
+  else if (a === "failed")  msg.log("❌", `Pipeline exhausted (scope=${scope}).`);
+  else if (a === "spawn")   msg.log("🔄", `Next: ${action.agent} (scope=${scope}, round ${(action.round||0)+1}/${action.maxRounds}).`);
+  else if (a === "source")  msg.log("🔄", `Next: ${action.agent} (scope=${scope}).`);
+  else                      msg.log("⚡", `Next: ${a} (scope=${scope}).`);
 }
