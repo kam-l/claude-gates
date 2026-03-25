@@ -60,7 +60,7 @@ try {
   // No scope handling
   if (!scope) {
     if (mdContent && requiresScope(mdContent)) {
-      msg.block("🔒", "conditions", `Agent "${bareAgentType}" needs scope=<name>. Add it to the spawn prompt.`);
+      msg.block("🔏", `Agent "${bareAgentType}" needs scope=<name>. Add it to the spawn prompt.`);
     }
     process.exit(0);
   }
@@ -97,13 +97,13 @@ try {
       const condMatch = /^(PASS|FAIL)(?:[:\s\u2014\u2013-]+(.*))?$/i.exec(condLast);
       if (condMatch && condMatch[1].toUpperCase() === "FAIL") {
         const reason = condMatch[2] ? condMatch[2].trim() : "Pre-spawn conditions check failed";
-        msg.block("🔒", "conditions", `Failed for ${bareAgentType}: ${reason}`);
+        msg.block("🔏", `Failed for ${bareAgentType}: ${reason}`);
         process.exit(0);
       }
-      msg.log("✅", "conditions", `${condMatch ? condMatch[1].toUpperCase() : "UNKNOWN"} for ${bareAgentType}`);
+      msg.log("✅", `${condMatch ? condMatch[1].toUpperCase() : "UNKNOWN"} for ${bareAgentType}`);
     } catch {
       // Semantic check failed — fail-open
-      msg.log("⚠️", "conditions", `Skipped for ${bareAgentType} (claude -p unavailable)`);
+      msg.log("⚠️", `Skipped for ${bareAgentType} (claude -p unavailable)`);
     }
   }
 
@@ -120,14 +120,14 @@ try {
         // spawn/source → only the expected agent
         if (scopeAction.action === "spawn" || scopeAction.action === "source") {
           if (scopeAction.agent !== bareAgentType) {
-            msg.block("🔒", "conditions", `Scope "${scope}" expects "${scopeAction.agent}", not "${bareAgentType}". Spawn ${scopeAction.agent}.`);
+            msg.block("🔏", `Scope "${scope}" expects "${scopeAction.agent}", not "${bareAgentType}". Spawn ${scopeAction.agent}.`);
             db.close();
             process.exit(0);
           }
         }
         // command → block agent spawns (command runs inline)
         else if (scopeAction.action === "command") {
-          msg.block("🔒", "conditions", `Scope "${scope}" has active COMMAND "${scopeAction.command}". Run it, then /pass_or_revise.`);
+          msg.block("🔏", `Scope "${scope}" has active COMMAND "${scopeAction.command}". Run it, then /pass_or_revise.`);
           db.close();
           process.exit(0);
         }
@@ -158,6 +158,6 @@ try {
   process.exit(0);
 } catch (err) {
   // Fail-open
-  msg.log("⚠️", "conditions", `Error: ${err.message}`);
+  msg.log("⚠️", `Error: ${err.message}`);
   process.exit(0);
 }

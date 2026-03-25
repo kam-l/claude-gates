@@ -70,18 +70,14 @@ try {
   if (attempts >= MAX_ATTEMPTS) {
     resetAttempts(db2, "_system", "plan-gate");
     db2.close();
-    process.stderr.write(`[ClaudeGates] ⚠️ plan: Safety valve activated.\n`);
+    process.stderr.write(`[ClaudeGates] ⚠️ Safety valve activated.\n`);
     process.exit(0);
   }
   db2.close();
 
   // ── Block ──
-  const reason = `[ClaudeGates] 🔒 plan: "${planFiles[0].name}" (${lines} lines) unverified. Spawn claude-gates:gater with scope=verify-plan.`;
-  process.stdout.write(JSON.stringify({
-    decision: "block",
-    reason,
-    systemMessage: reason,
-  }));
+  const reason = `[ClaudeGates] 🔐 "${planFiles[0].name}" (${lines} lines) unverified. Spawn claude-gates:gater with scope=verify-plan.`;
+  process.stdout.write(JSON.stringify({ decision: "block", reason }));
   process.exit(0);
 } catch {
   process.exit(0); // fail-open

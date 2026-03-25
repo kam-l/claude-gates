@@ -27,7 +27,7 @@ try {
   // Run all configured validation commands
   const failures = [];
   for (const cmd of config.commit_gate.commands) {
-    process.stderr.write(`[ClaudeGates] ⚡ commit: Running "${cmd}"...\n`);
+    process.stderr.write(`[ClaudeGates] ⚡ Running "${cmd}"...\n`);
     try {
       execSync(cmd, {
         encoding: "utf-8",
@@ -43,8 +43,8 @@ try {
 
   if (failures.length > 0) {
     const detail = failures.map(f => `  ${f.cmd}${f.output ? ": " + f.output : ""}`).join("\n");
-    const reason = `[ClaudeGates] ❌ commit: Pre-commit failed.\n${detail}`;
-    process.stdout.write(JSON.stringify({ decision: "block", reason, systemMessage: reason }));
+    const reason = `[ClaudeGates] ❌ Pre-commit failed.\n${detail}`;
+    process.stdout.write(JSON.stringify({ decision: "block", reason }));
   }
 
   process.exit(0);

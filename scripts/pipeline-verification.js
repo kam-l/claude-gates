@@ -164,8 +164,8 @@ function gatherScopeContext(sessionDir, scope, agentType) {
   return context;
 }
 
-function blockVerify(reason) {
-  process.stdout.write(JSON.stringify({ decision: "block", reason: msg.fmt("🔒", "verify", reason) }));
+function notifyVerify(sessionDir, reason) {
+  msg.notify(sessionDir, "🔐", reason);
 }
 
 // ── Main ─────────────────────────────────────────────────────────────
@@ -264,7 +264,7 @@ try {
       if (mdContent) {
         const steps = parseVerification(mdContent);
         if (steps && !scope) {
-          blockVerify(`Agent "${bareAgentType}" has verification: but no scope. Write to output_filepath with a Result: line.`);
+          notifyVerify(sessionDir, `Agent "${bareAgentType}" has verification: but no scope. Write to output_filepath with a Result: line.`);
         }
       }
       process.exit(0);
@@ -274,7 +274,7 @@ try {
     if (!artifactPath || !fs.existsSync(artifactPath)) {
       if (scope) {
         const expectedPath = `${sessionDir.replace(/\\/g, "/")}/${scope}/${bareAgentType}.md`;
-        blockVerify(`Write artifact to ${expectedPath} before stopping. Include a Result: PASS or Result: FAIL line.`);
+        notifyVerify(sessionDir, `Write artifact to ${expectedPath} before stopping. Include a Result: PASS or Result: FAIL line.`);
       }
       process.exit(0);
     }
@@ -283,7 +283,7 @@ try {
 
     // Layer 1: Result: line must exist
     if (!VERDICT_RE.test(artifactContent)) {
-      blockVerify(`${bareAgentType}.md missing Result: line. Add "Result: PASS" or "Result: FAIL".`);
+      notifyVerify(sessionDir, `${bareAgentType}.md missing Result: line. Add "Result: PASS" or "Result: FAIL".`);
       process.exit(0);
     }
 
@@ -309,7 +309,7 @@ try {
 
   process.exit(0);
 } catch (err) {
-  msg.log("⚠️", "verify", `Error: ${err.message}`);
+  msg.log("⚠️", `Error: ${err.message}`);
   process.exit(0); // fail-open
 }
 
@@ -352,7 +352,7 @@ function handleSource(db, scope, agentType, artifactPath, artifactContent, artif
 
   if (finalVerdict === "FAIL") {
     const reason = semanticResult && semanticResult.reason ? semanticResult.reason : "Semantic validation failed";
-    msg.notify(sessionDir, "❌", "verify", `FAIL — ${reason}. Re-spawn ${agentType} with scope=${scope}.`);
+    msg.notify(sessionDir, "❌", `FAIL — ${reason}. Re-spawn ${agentType} with scope=${scope}.`);
     process.exit(2);
   }
 }
@@ -400,18 +400,18 @@ function logAction(sessionDir, action, scope) {
   if (!action) return;
   switch (action.action) {
     case "done":
-      msg.notify(sessionDir, "✅", "verify", `All steps passed (scope=${scope}). Pipeline complete.`);
+      msg.notify(sessionDir, "✅", `All steps passed (scope=${scope}). Pipeline complete.`);
       break;
     case "failed":
-      msg.notify(sessionDir, "❌", "verify", `Pipeline FAILED (scope=${scope}) at step ${action.step ? action.step.step_index : "?"}.`);
+      msg.notify(sessionDir, "❌", `Pipeline FAILED (scope=${scope}) at step ${action.step ? action.step.step_index : "?"}.`);
       break;
     case "spawn":
-      msg.notify(sessionDir, "🔄", "verify", `Next: spawn ${action.agent} (scope=${scope}, round ${action.round + 1}/${action.maxRounds}).`);
+      msg.notify(sessionDir, "🔄", `Next: spawn ${action.agent} (scope=${scope}, round ${action.round + 1}/${action.maxRounds}).`);
       break;
     case "source":
-      msg.notify(sessionDir, "🔄", "verify", `Next: ${action.agent} (scope=${scope}).`);
+      msg.notify(sessionDir, "🔄", `Next: ${action.agent} (scope=${scope}).`);
       break;
     default:
-      msg.notify(sessionDir, "⚡", "verify", `Next: ${action.action} (scope=${scope}).`);
+      msg.notify(sessionDir, "⚡", `Next: ${action.action} (scope=${scope}).`);
   }
 }

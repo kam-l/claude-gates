@@ -71,9 +71,9 @@ try {
         // Non-fatal — show stderr output to user
         const output = (err.stderr || "").trim();
         if (output) {
-          process.stderr.write(`[ClaudeGates] ⚠️ edit: Formatter — ${output}\n`);
+          process.stderr.write(`[ClaudeGates] ⚠️ Formatter — ${output}\n`);
         } else {
-          process.stderr.write(`[ClaudeGates] ⚠️ edit: Formatter failed — ${expanded}\n`);
+          process.stderr.write(`[ClaudeGates] ⚠️ Formatter failed — ${expanded}\n`);
         }
       }
     }

@@ -2,10 +2,10 @@
 /**
  * Unified messaging for all claude-gates hooks.
  *
- * Template: [ClaudeGates] {emoji} {gate}: {message}
+ * Template: [ClaudeGates] {emoji} {message}
  *
  * Output channels:
- *   block()   → stdout JSON { decision:"block", reason, systemMessage } — user + Claude see it
+ *   block()   → stdout JSON { decision:"block", reason } — reason is injected into Claude's context
  *   info()    → stdout JSON { systemMessage } — user sees it (PreToolUse/PostToolUse only)
  *   notify()  → side-channel file — pipeline-block.js surfaces on next PreToolUse
  *   log()     → stderr — debug only, invisible to user
@@ -19,30 +19,26 @@ const path = require("path");
 
 const PREFIX = "[ClaudeGates]";
 
-function fmt(emoji, gate, text) {
-  return `${PREFIX} ${emoji} ${gate}: ${text}`;
+function fmt(emoji, text) {
+  return `${PREFIX} ${emoji} ${text}`;
 }
 
-/** Block a tool call. User + Claude both see the message. */
-function block(emoji, gate, text) {
-  const msg = fmt(emoji, gate, text);
-  process.stdout.write(JSON.stringify({
-    decision: "block",
-    reason: msg,
-    systemMessage: msg,
-  }));
+/** Block a tool call. reason is injected into Claude's context. */
+function block(emoji, text) {
+  const msg = fmt(emoji, text);
+  process.stdout.write(JSON.stringify({ decision: "block", reason: msg }));
 }
 
 /** Show info to user via systemMessage. Works on PreToolUse/PostToolUse only. */
-function info(emoji, gate, text) {
-  const msg = fmt(emoji, gate, text);
+function info(emoji, text) {
+  const msg = fmt(emoji, text);
   process.stdout.write(JSON.stringify({ systemMessage: msg }));
 }
 
 /** Queue a notification for the user. pipeline-block.js surfaces it on next PreToolUse.
  *  Use this from SubagentStop/SubagentStart where systemMessage is broken. */
-function notify(sessionDir, emoji, gate, text) {
-  const msg = fmt(emoji, gate, text);
+function notify(sessionDir, emoji, text) {
+  const msg = fmt(emoji, text);
   const filePath = path.join(sessionDir, ".pipeline-notifications");
   try {
     fs.appendFileSync(filePath, msg + "\n", "utf-8");
@@ -63,8 +59,8 @@ function drainNotifications(sessionDir) {
 }
 
 /** Debug log to stderr. Invisible to user. Same template for grep-ability. */
-function log(emoji, gate, text) {
-  process.stderr.write(fmt(emoji, gate, text) + "\n");
+function log(emoji, text) {
+  process.stderr.write(fmt(emoji, text) + "\n");
 }
 
 module.exports = { fmt, block, info, notify, drainNotifications, log };

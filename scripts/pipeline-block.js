@@ -40,7 +40,7 @@ try {
 
   const db = getDb(sessionDir);
   if (!db) {
-    if (pending) msg.info("", "", pending.replace(/\[ClaudeGates\] /g, ""));
+    if (pending) msg.info("", pending.replace(/\[ClaudeGates\] /g, ""));
     process.exit(0);
   }
 
@@ -62,9 +62,9 @@ try {
         engine.step(db, act.scope, { role: null, artifactVerdict: verdict });
         fs.unlinkSync(verdictPath);
         verdictProcessed = true;
-        msg.log("⚡", "block", `COMMAND verdict ${verdict} for scope="${act.scope}". Advanced.`);
+        msg.log("⚡", `COMMAND verdict ${verdict} for scope="${act.scope}". Advanced.`);
       } catch (e) {
-        msg.log("⚠️", "block", `Verdict file error for scope="${act.scope}": ${e.message}`);
+        msg.log("⚠️", `Verdict file error for scope="${act.scope}": ${e.message}`);
       }
     }
 
@@ -130,9 +130,8 @@ try {
   }
 
   const reason = parts.join(" ");
-  const out = { decision: "block", reason: msg.fmt("🔒", "block", reason) };
+  const out = { decision: "block", reason: msg.fmt("🔒", reason) };
   if (pending) out.systemMessage = pending;
-  else out.systemMessage = msg.fmt("🔒", "block", reason);
   process.stdout.write(JSON.stringify(out));
   process.exit(0);
 } catch {
