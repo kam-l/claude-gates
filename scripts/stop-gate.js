@@ -26,6 +26,7 @@ const { loadConfig } = require("./claude-gates-config.js");
 let v2Db, v3Db;
 try { v2Db = require("./claude-gates-db.js"); } catch {}
 try { v3Db = require("./pipeline-db.js"); } catch {}
+const { getSessionDir } = require("./pipeline-shared.js");
 
 try {
   const data = JSON.parse(fs.readFileSync(0, "utf-8"));
@@ -33,7 +34,7 @@ try {
   const sessionId = data.session_id || "";
   if (!sessionId) process.exit(0);
 
-  const sessionDir = path.join(process.cwd(), ".sessions", sessionId);
+  const sessionDir = getSessionDir(sessionId);
 
   // Open DB (v3 schema is a superset — getDb initializes both sets of tables)
   const db = v3Db ? v3Db.getDb(sessionDir) : (v2Db ? v2Db.getDb(sessionDir) : null);

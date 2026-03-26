@@ -19,6 +19,7 @@ const path = require("path");
 const { execSync } = require("child_process");
 const { getDb, addEdit, getEdits } = require("./claude-gates-db.js");
 const { loadConfig } = require("./claude-gates-config.js");
+const { getSessionDir } = require("./pipeline-shared.js");
 
 try {
   const data = JSON.parse(fs.readFileSync(0, "utf-8"));
@@ -26,7 +27,7 @@ try {
   const sessionId = data.session_id || "";
   if (!sessionId) process.exit(0);
 
-  const sessionDir = path.join(process.cwd(), ".sessions", sessionId);
+  const sessionDir = getSessionDir(sessionId);
 
   // Extract file_path from tool_input (Edit/Write both use file_path)
   const toolInput = data.tool_input || {};

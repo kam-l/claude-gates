@@ -11,6 +11,7 @@
 const fs = require("fs");
 const path = require("path");
 const { getDb } = require("./claude-gates-db.js");
+const { getSessionDir } = require("./pipeline-shared.js");
 
 try {
   const data = JSON.parse(fs.readFileSync(0, "utf-8"));
@@ -18,7 +19,7 @@ try {
   const sessionId = data.session_id || "";
   if (!sessionId) process.exit(0);
 
-  const sessionDir = path.join(process.cwd(), ".sessions", sessionId);
+  const sessionDir = getSessionDir(sessionId);
 
   const db = getDb(sessionDir);
   try {

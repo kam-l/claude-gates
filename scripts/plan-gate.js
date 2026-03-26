@@ -18,6 +18,7 @@
 const fs = require("fs");
 const path = require("path");
 const { getDb, getAttempts, incrAttempts, resetAttempts } = require("./claude-gates-db.js");
+const { getSessionDir } = require("./pipeline-shared.js");
 
 const TRIVIAL_LINE_LIMIT = 20;
 const MAX_ATTEMPTS = 3;
@@ -29,7 +30,7 @@ try {
   if (!sessionId) process.exit(0);
 
   const HOME = process.env.USERPROFILE || process.env.HOME || "";
-  const sessionDir = path.join(process.cwd(), ".sessions", sessionId);
+  const sessionDir = getSessionDir(sessionId);
   const plansDir = path.join(HOME, ".claude", "plans");
 
   // ── Check for gater verdict (SQLite) ──
