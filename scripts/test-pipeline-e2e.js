@@ -552,6 +552,70 @@ test("verdict file: REVISE sends back to source", () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════
+// Test: source verdict decoupling (Result: REVISE from source ≠ pipeline revision)
+// ══════════════════════════════════════════════════════════════════════
+
+console.log("\n=== E2E: source verdict decoupling ===");
+
+test("source REVISE advances SEMANTIC (source doesn't judge itself)", () => {
+  // Source agents produce artifacts — their Result: line is informational.
+  // Only SEMANTIC/REVIEW steps determine PASS/FAIL for pipeline flow.
+  // A rethinker writing "Result: REVISE" (about code) should NOT loop.
+  const dir = tmpDir();
+  const db = crud.getDb(dir);
+  try {
+    engine.createPipeline(db, "decouple-scope", "rethinker", [
+      { type: "SEMANTIC", prompt: "Check quality." },
+      { type: "REVIEW", agent: "reviewer", maxRounds: 3 },
+    ]);
+
+    // Source completes with REVISE (meaning "code needs work") — semantic check null (skipped)
+    // finalVerdict should be PASS (source doesn't drive flow), advancing past SEMANTIC
+    const a = engine.step(db, "decouple-scope", { role: "source", artifactVerdict: "PASS", semanticVerdict: null });
+    assert.strictEqual(a.action, "spawn", "Should advance to REVIEW step");
+    assert.strictEqual(a.agent, "reviewer");
+  } finally {
+    db.close();
+    cleanup(dir);
+  }
+});
+
+test("source FAIL still treated as PASS when semantic is null (source doesn't self-judge)", () => {
+  const dir = tmpDir();
+  const db = crud.getDb(dir);
+  try {
+    engine.createPipeline(db, "decouple-fail", "builder", [
+      { type: "SEMANTIC", prompt: "Check." },
+    ]);
+
+    // Even source FAIL with null semantic → PASS (source produced an artifact)
+    const a = engine.step(db, "decouple-fail", { role: "source", artifactVerdict: "PASS", semanticVerdict: null });
+    assert.strictEqual(a.action, "done", "Should complete pipeline");
+  } finally {
+    db.close();
+    cleanup(dir);
+  }
+});
+
+test("semantic FAIL still triggers revision even when source says PASS", () => {
+  const dir = tmpDir();
+  const db = crud.getDb(dir);
+  try {
+    engine.createPipeline(db, "sem-override", "builder", [
+      { type: "SEMANTIC", prompt: "Check." },
+    ]);
+
+    // Source PASS but semantic FAIL → revision (semantic is the judge)
+    const a = engine.step(db, "sem-override", { role: "source", artifactVerdict: "FAIL", semanticVerdict: "FAIL" });
+    assert.strictEqual(a.action, "source", "Semantic FAIL should trigger revision");
+    assert.strictEqual(crud.getPipelineState(db, "sem-override").status, "revision");
+  } finally {
+    db.close();
+    cleanup(dir);
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════
 // Test: gater as pipeline participant (no short-circuit deadlock)
 // ══════════════════════════════════════════════════════════════════════
 

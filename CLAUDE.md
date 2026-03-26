@@ -12,7 +12,7 @@ Declarative pipeline gates — `verification:` unified array format in agent fro
 
 ```bash
 node scripts/pipeline-test.js         # 93 unit/integration tests
-node scripts/test-pipeline-e2e.js     # 27 end-to-end tests
+node scripts/test-pipeline-e2e.js     # 30 end-to-end tests
 ```
 
 ## Frontmatter Quick Reference

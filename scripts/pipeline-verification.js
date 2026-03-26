@@ -101,7 +101,7 @@ function runSemanticCheck(prompt, artifactContent, artifactPath, contextContent,
 
   try {
     const result = execSync(
-      "claude -p --model sonnet --agent claude-gates:gater --max-turns 1 --tools \"\" --no-chrome --strict-mcp-config --system-prompt \"\" --disable-slash-commands --no-session-persistence",
+      "claude -p --model sonnet --agent claude-gates:gater --max-turns 1 --tools \"\" --no-chrome --strict-mcp-config --disable-slash-commands --no-session-persistence",
       {
         input: combinedPrompt,
         cwd: PROJECT_ROOT,
@@ -350,8 +350,10 @@ function handleSource(db, scope, agentType, artifactPath, artifactContent, artif
     semanticVerdict = semanticResult ? semanticResult.verdict : null;
   }
 
-  // Determine final verdict for recording (semantic FAIL overrides)
-  const finalVerdict = (semanticVerdict === "FAIL") ? "FAIL" : artifactVerdict;
+  // Source agents produce artifacts — they don't judge themselves.
+  // Only verification steps (SEMANTIC/REVIEW) determine PASS/FAIL.
+  // Source Result: line is recorded but doesn't drive pipeline flow.
+  const finalVerdict = (semanticVerdict === "FAIL") ? "FAIL" : "PASS";
   recordVerdict(db, scope, agentType, finalVerdict);
 
   // Engine call — for normal state, processes verdict on active step

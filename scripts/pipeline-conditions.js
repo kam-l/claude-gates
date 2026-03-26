@@ -82,7 +82,7 @@ try {
     try {
       const condPrompt = conditions + "\n\nAgent spawn prompt:\n" + prompt;
       const condResult = execSync(
-        "claude -p --model sonnet --agent claude-gates:gater --max-turns 1 --tools \"\" --no-chrome --strict-mcp-config --system-prompt \"\" --disable-slash-commands --no-session-persistence",
+        "claude -p --model sonnet --agent claude-gates:gater --max-turns 1 --tools \"\" --no-chrome --strict-mcp-config --disable-slash-commands --no-session-persistence",
         {
           input: condPrompt,
           cwd: PROJECT_ROOT,
