@@ -63,7 +63,7 @@ All gates are **fail-open** — if something breaks, your work continues unblock
 |------|------|-------------|
 | **Conditions** | `PreToolUse:Agent` | Gater evaluates spawn prompt against `conditions:` field. FAIL blocks the spawn |
 | **Verification** | `SubagentStop` | Structural check (artifact exists, `Result:` line) + semantic check (gater judges content quality) |
-| **Gate Chain** | `SubagentStop` → `PreToolUse:Agent` | Sequential reviewers from `verification:` field. Each must PASS before the next runs |
+| **Pipeline** | `SubagentStop` → `PreToolUse:Agent` | Sequential reviewers from `verification:` field. Each must PASS before the next runs |
 | **Plan** | `PreToolUse:ExitPlanMode` | Blocks unreviewed plans (>20 lines) until gater returns PASS. Auto-allows after 3 attempts |
 | **Commit** | `PreToolUse:Bash` | Runs configured commands before `git commit`. Disabled by default |
 | **Edit** | `PostToolUse:Edit\|Write` | Tracks edited files, runs opt-in formatters (deduped per file). Non-blocking |

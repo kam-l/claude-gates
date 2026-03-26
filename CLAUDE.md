@@ -45,8 +45,8 @@ conditions: |                         # Pre-spawn check (blocks on FAIL)
 - SQLite via `better-sqlite3`. `session-cleanup.js` sweeps both `.sessions/` and legacy `~/.claude/sessions/`.
 - Engine: `scripts/pipeline.js` — owns ALL state transitions via `step()`.
 - v3 DB: `scripts/pipeline-db.js` — tables: `pipeline_state`, `pipeline_steps`, `agents`, `edits`, `tool_history`.
-- Supporting: `claude-gates-db.js` (plan-gate, edit-gate), `claude-gates-config.js` (stop-gate, commit-gate).
+- Supporting: `claude-gates-db.js` (plan-gate, stop-gate), `edit-gate.js` (edit tracking), `claude-gates-config.js` (config + commit-gate).
 
 ## Configuration
 
-- `claude-gates.json` at repo root (optional). Module: `scripts/claude-gates-config.js`.
+- Create `claude-gates.json` at repo root to configure (optional). Module: `scripts/claude-gates-config.js`.
