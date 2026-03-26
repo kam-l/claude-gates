@@ -17,7 +17,7 @@ const fs = require("fs");
 const path = require("path");
 const { getDb } = require("./pipeline-db.js");
 const engine = require("./pipeline.js");
-const { VERDICT_RE, getSessionDir } = require("./pipeline-shared.js");
+const { VERDICT_RE, getSessionDir, agentRunningMarker } = require("./pipeline-shared.js");
 const msg = require("./messages.js");
 
 const ALLOWED_TOOLS = ["Read", "Glob", "Grep", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage"];
@@ -76,6 +76,7 @@ try {
 
   // No active pipeline — surface any pending notifications and allow
   if (!actions || actions.length === 0) {
+    if (pending) msg.info("", pending.replace(/\[ClaudeGates\] /g, ""));
     process.exit(0);
   }
 
@@ -92,6 +93,8 @@ try {
   let hasBlockingActions = false;
   for (const act of actions) {
     if (act.action === "spawn" || act.action === "source" || act.action === "semantic") {
+      // Skip blocking if the expected agent is still running (marker set by conditions.js, cleared by verification.js)
+      try { if (fs.existsSync(agentRunningMarker(sessionDir, act.scope))) continue; } catch {}
       const agent = act.agent || (act.step && act.step.source_agent);
       if (agent) expectedAgents.set(agent, { scope: act.scope, action: act });
       hasBlockingActions = true;

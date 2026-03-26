@@ -27,7 +27,7 @@
 const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
-const { parseVerification, findAgentMd, VERDICT_RE, getSessionDir } = require("./pipeline-shared.js");
+const { parseVerification, findAgentMd, VERDICT_RE, getSessionDir, agentRunningMarker } = require("./pipeline-shared.js");
 const crud = require("./pipeline-db.js");
 const engine = require("./pipeline.js");
 const msg = require("./messages.js");
@@ -185,19 +185,20 @@ try {
   const sessionDir = getSessionDir(sessionId);
   const lastMessage = data.last_assistant_message || "";
 
-  // ── Gater hardcoded fallback ──
-  // Record verdict from message (feeds plan-gate.js). Must stay above scope resolution.
+  // ── Gater verdict recording (feeds plan-gate.js) ──
+  // Always record to "gater-review" scope for plan-gate, then fall through to normal processing.
+  // Standalone gaters (not pipeline participants) will resolve as "ungated" and exit harmlessly.
   if (bareAgentType === "gater" && lastMessage) {
     const gaterVerdict = VERDICT_RE.exec(lastMessage);
     if (gaterVerdict) {
-      const db = crud.getDb(sessionDir);
+      const tempDb = crud.getDb(sessionDir);
       try {
-        recordVerdict(db, "gater-review", bareAgentType, gaterVerdict[1]);
+        recordVerdict(tempDb, "gater-review", bareAgentType, gaterVerdict[1]);
       } finally {
-        db.close();
+        tempDb.close();
       }
     }
-    process.exit(0);
+    // Fall through — do NOT exit early. Pipeline-participant gaters need engine.step().
   }
 
   // Find agent definition
@@ -253,6 +254,11 @@ try {
         artifactPath = path.join(sessionDir, scope, `${bareAgentType}.md`);
         if (!fs.existsSync(artifactPath)) artifactPath = null;
       }
+    }
+
+    // Clear agent-running marker — agent has completed (regardless of outcome)
+    if (scope) {
+      try { fs.unlinkSync(agentRunningMarker(sessionDir, scope)); } catch {}
     }
 
     // ── Role resolution ──

@@ -263,6 +263,54 @@ test("block: allows subagent calls", () => {
   assert.strictEqual(r.stdout, "");
 });
 
+test("block: skips blocking when agent-running marker exists", () => {
+  // Simulate: pipeline active, but source agent is still running (marker exists)
+  // Hook runs with cwd=tempRoot, so session dir must be under tempRoot
+  const _crud = require("./pipeline-db.js");
+  const _engine = require("./pipeline.js");
+
+  const markerSession = "abcd1234-test-marker-" + Date.now();
+  // getSessionDir truncates to first 8 hex chars — match that for DB + marker paths
+  const shortId = markerSession.replace(/-/g, "").slice(0, 8);
+  const markerDir = path.join(tempRoot, ".sessions", shortId).replace(/\\/g, "/");
+  const markerFile = path.join(markerDir, ".running-marker-scope").replace(/\\/g, "/");
+  fs.mkdirSync(markerDir, { recursive: true });
+
+  const markerDb = _crud.getDb(markerDir);
+  _engine.createPipeline(markerDb, "marker-scope", "e2e-builder", [
+    { type: "SEMANTIC", prompt: "Check." },
+  ]);
+  markerDb.close();
+
+  // Write running marker (simulates conditions.js after allowing spawn)
+  fs.writeFileSync(markerFile, "", "utf-8");
+
+  // Block hook should NOT block (agent is still running)
+  const r = runHook("pipeline-block.js", {
+    session_id: markerSession,
+    tool_name: "Bash",
+    tool_input: { command: "echo hi" },
+    agent_type: ""
+  }, { cwd: tempRoot });
+  assert.strictEqual(r.exitCode, 0);
+  assert.strictEqual(r.stdout, "", "Should not block while agent-running marker exists");
+
+  // Remove marker (simulates SubagentStop)
+  fs.unlinkSync(markerFile);
+
+  // Now it SHOULD block (agent completed, step is active, orchestrator must act)
+  const r2 = runHook("pipeline-block.js", {
+    session_id: markerSession,
+    tool_name: "Bash",
+    tool_input: { command: "echo hi" },
+    agent_type: ""
+  }, { cwd: tempRoot });
+  assert.strictEqual(r2.exitCode, 0);
+  assert.ok(r2.stdout.includes("block"), "Should block after marker removed");
+
+  cleanup(markerDir);
+});
+
 // ══════════════════════════════════════════════════════════════════════
 // Test: verification hook (structural parts only — no claude -p)
 // ══════════════════════════════════════════════════════════════════════
@@ -497,6 +545,51 @@ test("verdict file: REVISE sends back to source", () => {
     assert.strictEqual(a.action, "source");
     assert.strictEqual(a.agent, "worker");
     assert.strictEqual(crud.getPipelineState(db, "rev-cmd").status, "revision");
+  } finally {
+    db.close();
+    cleanup(dir);
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// Test: gater as pipeline participant (no short-circuit deadlock)
+// ══════════════════════════════════════════════════════════════════════
+
+console.log("\n=== E2E: gater pipeline participant ===");
+
+test("gater as REVIEW agent: engine.step advances (no short-circuit)", () => {
+  // Verifies fix: gater fallback no longer exits early when gater is a pipeline participant.
+  // The normal processing path handles gater as gate-agent.
+  const dir = tmpDir();
+  const db = crud.getDb(dir);
+  try {
+    engine.createPipeline(db, "gater-scope", "worker", [
+      { type: "REVIEW", agent: "gater", maxRounds: 3 },
+    ]);
+
+    // Gater (as gate-agent) returns PASS → should advance pipeline
+    const a = engine.step(db, "gater-scope", { role: "gate-agent", artifactVerdict: "PASS", semanticVerdict: null });
+    assert.strictEqual(a.action, "done", "Gater PASS should complete the pipeline");
+    assert.strictEqual(crud.getPipelineState(db, "gater-scope").status, "completed");
+  } finally {
+    db.close();
+    cleanup(dir);
+  }
+});
+
+test("gater as REVIEW agent: REVISE routes back to source", () => {
+  const dir = tmpDir();
+  const db = crud.getDb(dir);
+  try {
+    engine.createPipeline(db, "gater-rev", "worker", [
+      { type: "REVIEW", agent: "gater", maxRounds: 3 },
+    ]);
+
+    // Gater returns REVISE → should route to source (not deadlock)
+    const a = engine.step(db, "gater-rev", { role: "gate-agent", artifactVerdict: "REVISE", semanticVerdict: null });
+    assert.strictEqual(a.action, "source");
+    assert.strictEqual(a.agent, "worker");
+    assert.strictEqual(crud.getPipelineState(db, "gater-rev").status, "revision");
   } finally {
     db.close();
     cleanup(dir);

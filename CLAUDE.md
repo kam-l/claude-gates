@@ -12,7 +12,7 @@ Declarative pipeline gates — `verification:` unified array format in agent fro
 
 ```bash
 node scripts/pipeline-test.js         # 93 unit/integration tests
-node scripts/test-pipeline-e2e.js     # 24 end-to-end tests
+node scripts/test-pipeline-e2e.js     # 27 end-to-end tests
 ```
 
 ## Frontmatter Quick Reference
@@ -41,7 +41,7 @@ conditions: |                         # Pre-spawn check (blocks on FAIL)
 
 ## Session State
 
-- Session data (DB + artifacts) at `{CWD}/.sessions/{sessionId}/`. Shared helper: `getSessionDir()` in `pipeline-shared.js`.
+- Session data (DB + artifacts) at `{CWD}/.sessions/{shortId}/` (first 8 hex chars of UUID). Shared helper: `getSessionDir()` in `pipeline-shared.js`.
 - SQLite via `better-sqlite3`. `session-cleanup.js` sweeps both `.sessions/` and legacy `~/.claude/sessions/`.
 - Engine: `scripts/pipeline.js` — owns ALL state transitions via `step()`.
 - v3 DB: `scripts/pipeline-db.js` — tables: `pipeline_state`, `pipeline_steps`, `agents`, `edits`, `tool_history`.

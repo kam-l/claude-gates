@@ -21,7 +21,7 @@
 const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
-const { parseConditions, requiresScope, findAgentMd, getSessionDir } = require("./pipeline-shared.js");
+const { parseConditions, requiresScope, findAgentMd, getSessionDir, agentRunningMarker } = require("./pipeline-shared.js");
 const { getDb, registerAgent } = require("./pipeline-db.js");
 const engine = require("./pipeline.js");
 const msg = require("./messages.js");
@@ -150,6 +150,9 @@ try {
     // Register agent
     const outputFilepath = path.join(scopeDir, `${bareAgentType}.md`).replace(/\\/g, "/");
     registerAgent(db, scope, bareAgentType, outputFilepath);
+
+    // Mark agent as running — pipeline-block skips blocking while marker exists
+    try { fs.writeFileSync(agentRunningMarker(sessionDir, scope), "", "utf-8"); } catch {}
   } finally {
     db.close();
   }

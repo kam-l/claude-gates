@@ -16,6 +16,7 @@ const MAX_AGE_MS = MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
 try {
   const data = JSON.parse(fs.readFileSync(0, "utf-8"));
   const currentSession = data.session_id || "";
+  const currentShort = currentSession.replace(/-/g, "").slice(0, 8);
 
   const HOME = process.env.USERPROFILE || process.env.HOME || "";
   const sessionsDirs = [
@@ -31,7 +32,7 @@ try {
 
     for (const entry of fs.readdirSync(sessionsDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      if (entry.name === currentSession) continue;
+      if (entry.name === currentSession || entry.name === currentShort) continue;
 
       const dirPath = path.join(sessionsDir, entry.name);
       const dbPath = path.join(dirPath, "session.db");

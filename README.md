@@ -132,7 +132,7 @@ State:  pipeline-db.js ─ SQLite tables: pipeline_state, pipeline_steps,
 Config: claude-gates-config.js ─ reads claude-gates.json
 ```
 
-~4,900 LOC across 19 scripts. 93 unit tests + 24 end-to-end tests.
+~4,900 LOC across 19 scripts. 93 unit tests + 27 end-to-end tests.
 
 ## Configuration
 
@@ -142,7 +142,7 @@ Create `claude-gates.json` at your repo root, or run `/claude-gates:setup` to ge
 
 ```bash
 node scripts/pipeline-test.js         # 93 unit/integration tests
-node scripts/test-pipeline-e2e.js     # 24 end-to-end tests
+node scripts/test-pipeline-e2e.js     # 27 end-to-end tests
 ```
 
 ## License

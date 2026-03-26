@@ -209,11 +209,22 @@ function findAgentMd(agentType, projectRoot, home) {
 }
 
 /**
- * Session directory — project-local .sessions/{id}/, avoids ~/.claude/ permission prompts.
+ * Session directory — project-local .sessions/{short-id}/, avoids ~/.claude/ permission prompts.
+ * Truncates UUID to first 8 hex chars (~4B values, collision-safe for per-project use).
  * Forward-slash-normalized for cross-platform output_filepath consistency.
  */
 function getSessionDir(sessionId) {
-  return path.join(process.cwd(), ".sessions", sessionId).replace(/\\/g, "/");
+  const shortId = sessionId.replace(/-/g, "").slice(0, 8);
+  return path.join(process.cwd(), ".sessions", shortId).replace(/\\/g, "/");
 }
 
-module.exports = { extractFrontmatter, parseVerification, parseConditions, requiresScope, findAgentMd, getSessionDir, VERDICT_RE };
+/**
+ * Agent-running marker — tracks whether a spawned agent is still executing.
+ * Written by conditions.js (PreToolUse:Agent), cleared by verification.js (SubagentStop).
+ * Checked by pipeline-block.js to avoid blocking while agents run.
+ */
+function agentRunningMarker(sessionDir, scope) {
+  return path.join(sessionDir, `.running-${scope}`).replace(/\\/g, "/");
+}
+
+module.exports = { extractFrontmatter, parseVerification, parseConditions, requiresScope, findAgentMd, getSessionDir, agentRunningMarker, VERDICT_RE };
