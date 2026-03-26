@@ -504,6 +504,78 @@ test("verdict file: REVISE sends back to source", () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════
+// Test: deadlock prevention (missing artifact / missing Result: line)
+// ══════════════════════════════════════════════════════════════════════
+
+console.log("\n=== E2E: deadlock prevention (missing artifact) ===");
+
+test("missing artifact: engine.step(FAIL) transitions instead of deadlock", () => {
+  // Simulates the fix in pipeline-verification.js:
+  // When artifact is missing, hook now calls engine.step(FAIL) instead of silent exit.
+  const dir = tmpDir();
+  const db = crud.getDb(dir);
+  try {
+    engine.createPipeline(db, "deadlock-scope", "architect", [
+      { type: "SEMANTIC", prompt: "Check artifact." },
+      { type: "REVIEW", agent: "reviewer", maxRounds: 3 },
+    ]);
+
+    // Pipeline starts: step 0 active
+    let state = crud.getPipelineState(db, "deadlock-scope");
+    assert.strictEqual(state.status, "normal");
+    assert.strictEqual(crud.getActiveStep(db, "deadlock-scope").step_index, 0);
+
+    // Source completes WITHOUT artifact — hook calls engine.step(FAIL)
+    const a = engine.step(db, "deadlock-scope", { role: "source", artifactVerdict: "FAIL" });
+
+    // Should enter revision (route back to source), NOT stay stuck
+    state = crud.getPipelineState(db, "deadlock-scope");
+    assert.strictEqual(state.status, "revision", "Pipeline should enter revision, not stay normal");
+    assert.ok(a, "step() should return an action, not null");
+    assert.strictEqual(a.action, "source", "Action should route back to source agent");
+    assert.strictEqual(a.agent, "architect");
+  } finally {
+    db.close();
+    cleanup(dir);
+  }
+});
+
+test("missing Result line: pipeline recovers via FAIL verdict", () => {
+  // After max_rounds of FAIL, pipeline should reach 'failed' state (not deadlock)
+  const dir = tmpDir();
+  const db = crud.getDb(dir);
+  try {
+    engine.createPipeline(db, "noResult-scope", "builder", [
+      { type: "SEMANTIC", prompt: "Check." },
+    ]);
+
+    // SEMANTIC step: source FAIL → revision round 1
+    let a = engine.step(db, "noResult-scope", { role: "source", artifactVerdict: "FAIL" });
+    assert.strictEqual(a.action, "source");
+
+    // Source re-completes, still FAIL → reactivates step, then FAIL → revision round 2
+    a = engine.step(db, "noResult-scope", { role: "source", artifactVerdict: "PASS" });
+    // Reactivated SEMANTIC step — now process FAIL on it
+    a = engine.step(db, "noResult-scope", { role: "source", artifactVerdict: "FAIL" });
+    assert.strictEqual(a.action, "source");
+
+    // Round 3
+    a = engine.step(db, "noResult-scope", { role: "source", artifactVerdict: "PASS" });
+    a = engine.step(db, "noResult-scope", { role: "source", artifactVerdict: "FAIL" });
+    assert.strictEqual(a.action, "source");
+
+    // Round 4 — should exhaust (max_rounds=3)
+    a = engine.step(db, "noResult-scope", { role: "source", artifactVerdict: "PASS" });
+    a = engine.step(db, "noResult-scope", { role: "source", artifactVerdict: "FAIL" });
+    assert.strictEqual(a.action, "failed", "Pipeline should exhaust after maxRounds");
+    assert.strictEqual(crud.getPipelineState(db, "noResult-scope").status, "failed");
+  } finally {
+    db.close();
+    cleanup(dir);
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════
 // Test: gt-worker v3 format parsing
 // ══════════════════════════════════════════════════════════════════════
 

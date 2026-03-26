@@ -270,20 +270,22 @@ try {
       process.exit(0);
     }
 
-    // Artifact missing — block
+    // Artifact missing — treat as FAIL to avoid deadlock (step stays "active" forever otherwise)
     if (!artifactPath || !fs.existsSync(artifactPath)) {
       if (scope) {
         const expectedPath = `${sessionDir.replace(/\\/g, "/")}/${scope}/${bareAgentType}.md`;
-        notifyVerify(sessionDir, `Write artifact to ${expectedPath} before stopping. Include a Result: PASS or Result: FAIL line.`);
+        notifyVerify(sessionDir, `${bareAgentType} completed without artifact. Treating as FAIL. Expected: ${expectedPath}`);
+        engine.step(db, scope, { role, artifactVerdict: "FAIL" });
       }
       process.exit(0);
     }
 
     const artifactContent = fs.readFileSync(artifactPath, "utf-8");
 
-    // Layer 1: Result: line must exist
+    // Layer 1: Result: line must exist — treat missing as FAIL to avoid deadlock
     if (!VERDICT_RE.test(artifactContent)) {
-      notifyVerify(sessionDir, `${bareAgentType}.md missing Result: line. Add "Result: PASS" or "Result: FAIL".`);
+      notifyVerify(sessionDir, `${bareAgentType}.md missing Result: line. Treating as FAIL.`);
+      engine.step(db, scope, { role, artifactVerdict: "FAIL" });
       process.exit(0);
     }
 
