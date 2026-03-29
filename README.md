@@ -40,7 +40,7 @@ The `verification:` array in agent frontmatter defines an ordered pipeline. Each
 - **Hook-level enforcement** — gates are Claude Code hooks (`PreToolUse`, `SubagentStop`, `Stop`), not prompt instructions. They block tool calls via exit codes, not suggestions.
 - **SQLite-backed state** — all pipeline state (verdicts, rounds, scopes, edits) lives in a per-session `session.db` via `better-sqlite3`. Atomic transactions, no file-locking races.
 - **Scope-based isolation** — each pipeline gets a `scope=<name>`. Parallel pipelines in the same session run independently with no cross-talk.
-- **Artifact-based verification** — each agent gets an `output_filepath` injected at spawn. Gates verify the artifact file, not conversation state. Artifacts persist on disk, survive context compaction, and are readable by downstream agents.
+- **Semantics first, structure later** — agents think freely with no output format constraints. SubagentStop captures their response as the artifact and pivots verifiers to add a structured verdict. No `output_filepath` injection, no `Result:` line requirement during reasoning.
 - **Fail-open** — every hook catches errors and exits 0. If SQLite fails, if a script throws, if `claude -p` is unavailable — your work continues unblocked.
 - **Declarative** — define what needs to happen in YAML frontmatter. The engine handles state transitions, retries, and routing.
 
@@ -62,7 +62,7 @@ All gates are **fail-open** — if something breaks, your work continues unblock
 | Gate | Hook | What it does |
 |------|------|-------------|
 | **Conditions** | `PreToolUse:Agent` | Gater evaluates spawn prompt against `conditions:` field. FAIL blocks the spawn |
-| **Verification** | `SubagentStop` | Structural check (artifact exists, `Result:` line) + semantic check (gater judges content quality) |
+| **Verification** | `SubagentStop` | Captures agent output as artifact. Verifiers get a pivot prompt for their `Result:` verdict. Semantic check (gater judges content quality) |
 | **Pipeline** | `SubagentStop` → `PreToolUse:Agent` | Sequential reviewers from `verification:` field. Each must PASS before the next runs |
 | **Plan** | `PreToolUse:ExitPlanMode` | Blocks unreviewed plans (>20 lines) until gater returns PASS. Auto-allows after 3 attempts |
 | **Commit** | `PreToolUse:Bash` | Runs configured commands before `git commit`. Disabled by default |
@@ -120,7 +120,7 @@ hooks.json
   ├─ PostToolUse ───→ edit-gate.js       (track edits, run formatters)
   │                   plan-gate-clear.js (clear plan gate after exit)
   │
-  ├─ SubagentStart ─→ pipeline-injection.js (inject output_filepath)
+  ├─ SubagentStart ─→ pipeline-injection.js (role context for verifiers/fixers)
   │
   ├─ SubagentStop ──→ pipeline-verification.js (verdict → state machine)
   │

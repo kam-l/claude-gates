@@ -86,6 +86,12 @@ try {
   // Read-only + progress tracking tools always allowed
   if (ALLOWED_TOOLS.includes(toolName)) process.exit(0);
 
+  // /heal skill always allowed — escape hatch for stuck gates
+  if (toolName === "Skill") {
+    const skill = (toolInput.skill || "").replace(/^.*:/, "");
+    if (skill === "heal") process.exit(0);
+  }
+
   // Build expected agents and allowed tools
   const expectedAgents = new Map();
   const commandAllowedTools = new Set();
@@ -106,6 +112,12 @@ try {
   }
 
   if (!hasBlockingActions) process.exit(0);
+
+  // Write/Edit scoped to session artifacts — allow writes to non-session paths
+  if (toolName === "Write" || toolName === "Edit") {
+    const targetPath = (toolInput.file_path || "").replace(/\\/g, "/");
+    if (targetPath && !targetPath.startsWith(sessionDir + "/")) process.exit(0);
+  }
 
   // Agent tool: allow expected agents
   if (toolName === "Agent") {

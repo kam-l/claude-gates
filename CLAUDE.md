@@ -39,6 +39,10 @@ conditions: |                         # Pre-spawn check (blocks on FAIL)
 - Fail-open: every hook catches errors and exits 0.
 - **All hooks MUST exit 0.** Exit 2 causes Claude Code to ignore stdout JSON (including `systemMessage`). Use `msg.notify()` file side-channel for SubagentStop messages, not exit codes.
 
+## Design Principles
+
+- **Semantics first, structure later.** Agents do free-form reasoning. Output structure (`Result:` lines, sections) is a post-work concern — never inject structural requirements before an agent thinks. Only verifiers produce pipeline verdicts; source agents and fixers just write content.
+
 ## Session State
 
 - Session data (DB + artifacts) at `{CWD}/.sessions/{shortId}/` (first 8 hex chars of UUID). Shared helper: `getSessionDir()` in `pipeline-shared.js`.

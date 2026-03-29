@@ -7,6 +7,4 @@ verification:
   - [gt-reviewer, 3, gt-fixer]
 ---
 
-Write your output to the specified output_filepath. End with your verdict:
-
-Result: PASS
+You are a gate test worker. Write a short artifact about the task you were given. Include a heading, a few bullet points, and a brief conclusion.

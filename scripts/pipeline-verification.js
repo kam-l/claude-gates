@@ -13,7 +13,7 @@
  *
  * Role dispatch via engine.resolveRole() + engine.step({ role, artifactVerdict, semanticVerdict }):
  *   source     → SEMANTIC step check + engine.step({ role: 'source', ... })
- *   gate-agent → implicit semantic + engine.step({ role: 'gate-agent', ... })
+ *   verifier → implicit semantic + engine.step({ role: 'verifier', ... })
  *   fixer      → implicit semantic + engine.step({ role: 'fixer', ... })
  *   ungated    → exit(0)
  *
@@ -112,12 +112,12 @@ function runSemanticCheck(prompt, artifactContent, artifactPath, contextContent,
       }
     ).trim();
 
-    const lines = result.split("\n").filter(l => l.trim());
-    const lastLine = lines.length > 0 ? lines[lines.length - 1].trim() : "";
-    const match = /^(PASS|FAIL)(?:[:\s\u2014\u2013-]+(.*))?$/i.exec(lastLine);
-    return match
-      ? { verdict: match[1].toUpperCase(), reason: match[2] ? match[2].trim() : "", fullResponse: result }
-      : null;
+    const match = /^Result:\s*(PASS|FAIL|REVISE|CONVERGED)\b(.*)?$/mi.exec(result);
+    if (!match) return null;
+    // Normalize: REVISE→FAIL (quality check failed), CONVERGED→PASS
+    const raw = match[1].toUpperCase();
+    const verdict = (raw === "PASS" || raw === "CONVERGED") ? "PASS" : "FAIL";
+    return { verdict, reason: match[2] ? match[2].trim() : "", fullResponse: result };
   } catch {
     return null; // fail-open
   }
@@ -174,7 +174,7 @@ try {
   let data;
   try { data = JSON.parse(fs.readFileSync(0, "utf-8")); } catch { process.exit(0); }
 
-  if (data.stop_hook_active) process.exit(0);
+  const isContinuation = !!data.stop_hook_active;
 
   const agentType = data.agent_type || "";
   if (!agentType) process.exit(0);
@@ -216,21 +216,53 @@ try {
   const db = crud.getDb(sessionDir);
 
   try {
-    // Move artifact from temp path to canonical path
+    // Resolve artifact: existing file → pivot agent to write one
     let scope = transcriptScope;
     let artifactPath = null;
+
+    // Read agent-running marker mtime (agent spawn time) before artifact resolution
+    let agentSpawnTime = 0;
+    if (scope) {
+      const markerPath = agentRunningMarker(sessionDir, scope);
+      try { agentSpawnTime = fs.statSync(markerPath).mtimeMs; } catch {}
+      try { fs.unlinkSync(markerPath); } catch {}
+    }
 
     if (scope) {
       const correctPath = path.join(sessionDir, scope, `${bareAgentType}.md`);
       const tempPath = path.join(sessionDir, `${agentId}.md`);
+      const scopeDir = path.dirname(correctPath);
 
       if (fs.existsSync(tempPath)) {
-        const scopeDir = path.dirname(correctPath);
+        // Agent wrote to temp path (via output_filepath), move to canonical
         if (!fs.existsSync(scopeDir)) fs.mkdirSync(scopeDir, { recursive: true });
         try {
           fs.copyFileSync(tempPath, correctPath);
           fs.unlinkSync(tempPath);
         } catch {}
+      } else if (lastMessage) {
+        if (!fs.existsSync(scopeDir)) fs.mkdirSync(scopeDir, { recursive: true });
+        if (!fs.existsSync(correctPath) && !isContinuation) {
+          // First stop, no artifact file — pivot: tell agent to write it
+          const writePath = correctPath.replace(/\\/g, "/");
+          process.stdout.write(JSON.stringify({
+            decision: "block",
+            reason: `[ClaudeGates] Your work is done. Now write a thorough summary of your complete findings to: ${writePath}`
+          }));
+          process.exit(0);
+        } else if (!fs.existsSync(correctPath) && isContinuation) {
+          // Continuation but agent still didn't write file — fallback to lastMessage
+          fs.writeFileSync(correctPath, lastMessage, "utf-8");
+        } else if (fs.existsSync(correctPath) && agentSpawnTime > 0) {
+          // File exists — check if agent updated it during THIS run
+          try {
+            const fileMtime = fs.statSync(correctPath).mtimeMs;
+            if (fileMtime < agentSpawnTime) {
+              // Stale from previous round — overwrite with current output
+              fs.writeFileSync(correctPath, lastMessage, "utf-8");
+            }
+          } catch {}
+        }
       }
 
       if (fs.existsSync(correctPath)) {
@@ -256,11 +288,6 @@ try {
       }
     }
 
-    // Clear agent-running marker — agent has completed (regardless of outcome)
-    if (scope) {
-      try { fs.unlinkSync(agentRunningMarker(sessionDir, scope)); } catch {}
-    }
-
     // ── Role resolution ──
     // Called for ALL agents regardless of frontmatter. Role depends on pipeline_steps, not agent definition.
     const role = scope ? engine.resolveRole(db, scope, bareAgentType) : "ungated";
@@ -270,7 +297,7 @@ try {
       if (mdContent) {
         const steps = parseVerification(mdContent);
         if (steps && !scope) {
-          notifyVerify(sessionDir, `Agent "${bareAgentType}" has verification: but no scope. Write to output_filepath with a Result: line.`);
+          notifyVerify(sessionDir, `Agent "${bareAgentType}" has verification: but no scope. Add scope=<name> to the spawn prompt.`);
         }
       }
       process.exit(0);
@@ -288,8 +315,11 @@ try {
 
     const artifactContent = fs.readFileSync(artifactPath, "utf-8");
 
-    // Layer 1: Result: line must exist — treat missing as FAIL to avoid deadlock
-    if (!VERDICT_RE.test(artifactContent)) {
+    // Layer 1: Result: line — only required from verifiers.
+    // Source agents and fixers just produce content; their verdicts are overridden by handlers.
+    if (role === "verifier" && !VERDICT_RE.test(artifactContent)) {
+      // Verifier artifact exists but missing verdict — treat as FAIL.
+      // (The artifact pivot already told verifiers to include their verdict.)
       notifyVerify(sessionDir, `${bareAgentType}.md missing Result: line. Treating as FAIL.`);
       engine.step(db, scope, { role, artifactVerdict: "FAIL" });
       process.exit(0);
@@ -305,8 +335,8 @@ try {
 
     if (role === "source") {
       handleSource(db, scope, bareAgentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir);
-    } else if (role === "gate-agent") {
-      handleGateAgent(db, scope, bareAgentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir);
+    } else if (role === "verifier") {
+      handleVerifier(db, scope, bareAgentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir);
     } else if (role === "fixer") {
       handleFixer(db, scope, bareAgentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir);
     }
@@ -366,7 +396,7 @@ function handleSource(db, scope, agentType, artifactPath, artifactContent, artif
   }
 }
 
-function handleGateAgent(db, scope, agentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir) {
+function handleVerifier(db, scope, agentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir) {
   // Implicit semantic check for gate agents
   const semanticResult = runSemanticCheck(
     "Is this review thorough? Does it identify real issues or correctly approve? Is the verdict justified given the scope artifacts?",
@@ -379,7 +409,7 @@ function handleGateAgent(db, scope, agentType, artifactPath, artifactContent, ar
   recordVerdict(db, scope, agentType, finalVerdict);
 
   // Single engine call — engine handles gate-retry (semantic FAIL) vs normal step
-  const nextAction = engine.step(db, scope, { role: "gate-agent", artifactVerdict, semanticVerdict });
+  const nextAction = engine.step(db, scope, { role: "verifier", artifactVerdict, semanticVerdict });
   logAction(sessionDir, nextAction, scope);
 
 }
@@ -387,7 +417,7 @@ function handleGateAgent(db, scope, agentType, artifactPath, artifactContent, ar
 function handleFixer(db, scope, agentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir) {
   // Implicit semantic check for fixers
   const semanticResult = runSemanticCheck(
-    "Did this fix address the revision instructions? Is the Result: line justified?",
+    "Did this fix address the revision instructions?",
     artifactContent, artifactPath, scopeContext, true
   );
   writeAudit(sessionDir, scope, agentType, artifactPath, semanticResult);

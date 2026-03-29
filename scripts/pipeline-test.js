@@ -447,12 +447,12 @@ test("step({ role: 'source' }) advances SEMANTIC step", () => {
   });
 });
 
-test("step({ role: 'gate-agent', semanticVerdict: 'FAIL' }) retries gate", () => {
+test("step({ role: 'verifier', semanticVerdict: 'FAIL' }) retries gate", () => {
   withDb(db => {
     engine.createPipeline(db, "s1", "worker", [
       { type: "REVIEW", agent: "reviewer", maxRounds: 3 },
     ]);
-    const a = engine.step(db, "s1", { role: "gate-agent", artifactVerdict: "PASS", semanticVerdict: "FAIL" });
+    const a = engine.step(db, "s1", { role: "verifier", artifactVerdict: "PASS", semanticVerdict: "FAIL" });
     // Gate retried: still spawn action, round incremented
     assert.strictEqual(a.action, "spawn");
     assert.strictEqual(a.agent, "reviewer");
@@ -460,16 +460,16 @@ test("step({ role: 'gate-agent', semanticVerdict: 'FAIL' }) retries gate", () =>
   });
 });
 
-test("step({ role: 'gate-agent', semanticVerdict: 'FAIL' }) exhaustion after maxRounds", () => {
+test("step({ role: 'verifier', semanticVerdict: 'FAIL' }) exhaustion after maxRounds", () => {
   withDb(db => {
     engine.createPipeline(db, "s1", "worker", [
       { type: "REVIEW", agent: "reviewer", maxRounds: 1 },
     ]);
     // First semantic FAIL → round 1 (1 > 1 = false, retry)
-    let a = engine.step(db, "s1", { role: "gate-agent", artifactVerdict: "PASS", semanticVerdict: "FAIL" });
+    let a = engine.step(db, "s1", { role: "verifier", artifactVerdict: "PASS", semanticVerdict: "FAIL" });
     assert.strictEqual(a.action, "spawn"); // retried
     // Second semantic FAIL → round 2 (2 > 1 = true, exhausted)
-    a = engine.step(db, "s1", { role: "gate-agent", artifactVerdict: "PASS", semanticVerdict: "FAIL" });
+    a = engine.step(db, "s1", { role: "verifier", artifactVerdict: "PASS", semanticVerdict: "FAIL" });
     assert.strictEqual(a.action, "failed");
     assert.strictEqual(a.round, 2);
     assert.strictEqual(a.maxRounds, 1);
@@ -570,10 +570,10 @@ test("getAllNextActions returns actions for all active scopes", () => {
 
 console.log("\n=== pipeline.js: resolveRole ===");
 
-test("resolveRole: gate-agent for active reviewer", () => {
+test("resolveRole: verifier for active reviewer", () => {
   withDb(db => {
     engine.createPipeline(db, "s1", "worker", [{ type: "REVIEW", agent: "reviewer", maxRounds: 3 }]);
-    assert.strictEqual(engine.resolveRole(db, "s1", "reviewer"), "gate-agent");
+    assert.strictEqual(engine.resolveRole(db, "s1", "reviewer"), "verifier");
   });
 });
 
@@ -604,7 +604,7 @@ test("resolveRole: ungated for unknown agent", () => {
 test("resolveRole: unscoped search across pipelines", () => {
   withDb(db => {
     engine.createPipeline(db, "s1", "worker", [{ type: "REVIEW", agent: "reviewer", maxRounds: 3 }]);
-    assert.strictEqual(engine.resolveRole(db, null, "reviewer"), "gate-agent");
+    assert.strictEqual(engine.resolveRole(db, null, "reviewer"), "verifier");
     assert.strictEqual(engine.resolveRole(db, null, "unknown"), "ungated");
   });
 });
@@ -922,12 +922,12 @@ test("createPipeline is idempotent", () => {
   });
 });
 
-test("resolveRole works for gate-agent context enrichment", () => {
+test("resolveRole works for verifier context enrichment", () => {
   withDb(db => {
     engine.createPipeline(db, "s1", "worker", [
       { type: "REVIEW_WITH_FIXER", agent: "reviewer", maxRounds: 3, fixer: "patcher" },
     ]);
-    assert.strictEqual(engine.resolveRole(db, "s1", "reviewer"), "gate-agent");
+    assert.strictEqual(engine.resolveRole(db, "s1", "reviewer"), "verifier");
     const activeStep = crud.getActiveStep(db, "s1");
     assert.strictEqual(activeStep.agent, "reviewer");
     assert.strictEqual(activeStep.fixer, "patcher");
@@ -1056,7 +1056,7 @@ test("gate agent semantic FAIL via engine: round increment + re-run", () => {
     engine.createPipeline(db, "s1", "worker", [
       { type: "REVIEW", agent: "reviewer", maxRounds: 3 },
     ]);
-    const a = engine.step(db, "s1", { role: "gate-agent", artifactVerdict: "PASS", semanticVerdict: "FAIL" });
+    const a = engine.step(db, "s1", { role: "verifier", artifactVerdict: "PASS", semanticVerdict: "FAIL" });
     assert.strictEqual(a.action, "spawn");
     assert.strictEqual(a.agent, "reviewer");
     assert.strictEqual(a.round, 1); // round incremented
@@ -1070,7 +1070,7 @@ test("gate agent semantic FAIL via engine: exhaustion → failed", () => {
       { type: "REVIEW", agent: "reviewer", maxRounds: 0 },
     ]);
     // maxRounds=0: first FAIL → round 1, 1 > 0 → exhausted
-    const a = engine.step(db, "s1", { role: "gate-agent", artifactVerdict: "PASS", semanticVerdict: "FAIL" });
+    const a = engine.step(db, "s1", { role: "verifier", artifactVerdict: "PASS", semanticVerdict: "FAIL" });
     assert.strictEqual(a.action, "failed");
     assert.strictEqual(crud.getPipelineState(db, "s1").status, "failed");
   });
