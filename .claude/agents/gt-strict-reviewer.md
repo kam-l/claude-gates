@@ -7,6 +7,4 @@ role: gate
 
 Review the source artifact. You MUST find issues and return REVISE. Never return PASS.
 
-Write your review to output_filepath. Last line must be:
-
-Result: REVISE
+End with: Result: REVISE

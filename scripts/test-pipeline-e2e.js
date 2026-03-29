@@ -184,19 +184,15 @@ test("conditions: allow unknown agent (no .md file)", () => {
 
 console.log("\n=== E2E: pipeline-injection.js ===");
 
-test("injection: injects output_filepath and agent_gate context", () => {
+test("injection: source agent gets no injection on first run (semantics first)", () => {
   const r = runHook("pipeline-injection.js", {
     session_id: sessionId,
     agent_type: "e2e-builder",
     agent_id: "agent-001"
   }, { cwd: tempRoot });
   assert.strictEqual(r.exitCode, 0);
-  assert.ok(r.stdout, "Expected stdout output");
-  const out = JSON.parse(r.stdout);
-  assert.strictEqual(out.hookSpecificOutput.hookEventName, "SubagentStart");
-  assert.ok(out.hookSpecificOutput.additionalContext.includes("output_filepath="));
-  assert.ok(out.hookSpecificOutput.additionalContext.includes("agent-001.md"));
-  assert.ok(out.hookSpecificOutput.additionalContext.includes("<agent_gate"));
+  // Source agents on first run get NO injection — semantics first
+  assert.strictEqual(r.stdout, "", "Source agents should get no injection on first run");
 });
 
 test("injection: handles missing session gracefully", () => {
@@ -217,10 +213,7 @@ test("injection: handles plugin-qualified agent type", () => {
     agent_id: "agent-003"
   }, { cwd: tempRoot });
   assert.strictEqual(r.exitCode, 0);
-  if (r.stdout) {
-    const out = JSON.parse(r.stdout);
-    assert.ok(out.hookSpecificOutput.additionalContext.includes("output_filepath="));
-  }
+  // Source agents get no injection regardless of plugin prefix
 });
 
 // ══════════════════════════════════════════════════════════════════════
