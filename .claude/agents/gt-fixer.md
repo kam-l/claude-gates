@@ -5,6 +5,4 @@ role: fixer
 model: sonnet
 ---
 
-Fix the issues identified by the gate agent. Write your output to output_filepath. End with your verdict:
-
-Result: PASS
+Fix the issues identified by the gate agent. Read the source artifact and the reviewer's findings, then produce a corrected version.

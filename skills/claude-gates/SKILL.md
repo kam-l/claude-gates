@@ -5,8 +5,8 @@ user-invocable: false
 
 # claude-gates v3
 
-Hook-level enforcement for agent pipelines. Two layers:
-- **Deterministic**: artifact file exists, `Result:` line present, scope registered
+Hook-level enforcement for agent pipelines. Semantics first, structure later — agents think freely, SubagentStop captures output and pivots verifiers for structured verdicts. Two verification layers:
+- **Deterministic**: artifact exists, `Result:` line present (verifiers only)
 - **Semantic**: `claude -p` judges content quality via gater agent
 
 ## Agent Definition
@@ -28,9 +28,9 @@ Spawn with `scope=<name>`: `Agent({ subagent_type: "implementer", prompt: "scope
 ## Pipeline Lifecycle
 
 1. **PreToolUse:Agent** (`pipeline-conditions.js`) — conditions check + step enforcement + scope registration
-2. **SubagentStart** (`pipeline-injection.js`) — creates pipeline, injects `output_filepath` + role context
-3. **Agent runs** — writes artifact to `output_filepath`, last line: `Result: PASS` or `Result: FAIL`
-4. **SubagentStop** (`pipeline-verification.js`) — scope → role → semantic check → `engine.step()`
+2. **SubagentStart** (`pipeline-injection.js`) — creates pipeline, injects role context for verifiers/fixers (no output structure)
+3. **Agent runs** — thinks freely, no format constraints. Source agents on revision get artifact path to update.
+4. **SubagentStop** (`pipeline-verification.js`) — pivots agent to write artifact → scope → role → semantic check → `engine.step()`
 5. **PreToolUse** (`pipeline-block.js`) — blocks tools while steps pending, forces expected agent spawns
 
 ## Step Types
@@ -47,7 +47,7 @@ Spawn with `scope=<name>`: `Agent({ subagent_type: "implementer", prompt: "scope
 | Role | Identified by | Behavior |
 |------|--------------|----------|
 | source | `pipeline_state.source_agent` | SEMANTIC check → engine.step |
-| gate-agent | active step's `agent` field | implicit semantic → engine.step |
+| verifier | active step's `agent` field | implicit semantic → engine.step |
 | fixer | fix step's `fixer` field | implicit semantic → reactivate gate step |
 | gater | hardcoded `bareType === "gater"` | record verdict (feeds plan-gate) |
 
@@ -63,8 +63,8 @@ Failed pipeline recovery: delete rows via `deletePipeline(db, scope)`, re-spawn 
 
 | Symptom | Fix |
 |---------|-----|
-| "Write your artifact to ..." | Write to `output_filepath` from `<agent_gate>` block |
-| "Missing Result: line" | Add `Result: PASS` or `Result: FAIL` as standalone line |
+| "Write your findings to ..." | SubagentStop pivot — write your summary to the specified path |
+| "Missing Result: line" | Verifiers must add `Result: PASS`, `REVISE`, `CONVERGED`, or `FAIL` |
 | "has verification but no scope" | Add `scope=<name>` to spawn prompt |
 | "expects agent X, not Y" | Pipeline step requires specific agent — spawn the named one |
 | "COMMAND step active" | Run the command, then `/pass_or_revise` |
