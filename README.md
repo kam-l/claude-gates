@@ -51,7 +51,7 @@ All are customizable by `/claude-gates:setup`.
 - **Hook-level enforcement** — gates are Claude Code hooks (`PreToolUse`, `SubagentStop`, `Stop`), not prompt instructions. They block tool calls via exit codes, not suggestions.
 - **SQLite-backed state** — all pipeline state (verdicts, rounds, scopes, edits) lives in a per-session `session.db` via `better-sqlite3`. Atomic transactions, no file-locking races.
 - **Scope-based isolation** — each pipeline gets a `scope=<name>`. Parallel pipelines in the same session run independently with no cross-talk.
-- **Semantics first, structure later** — agents think freely with no output format constraints. SubagentStop captures their response as the artifact and pivots verifiers to add a structured verdict. No `output_filepath` injection, no `Result:` line requirement during reasoning.
+- **Semantics first, structure later** — agents think freely with no output format constraints until  SubagentStop refocuses them to summarize their run in an output artifact.
 - **Fail-open** — every hook catches errors and exits 0. If SQLite fails, if a script throws, if `claude -p` is unavailable — your work continues unblocked.
 - **Declarative** — define what needs to happen in YAML frontmatter. The engine handles state transitions, retries, and routing.
 
@@ -64,7 +64,7 @@ name: implementer
 verification:                                # ordered pipeline steps
   - ["Does this show real implementation?"]  # Gater judges agent's output file
   - [reviewer, 3]                            # Separate agent verifies - 3 rounds max
-  - [reviewer, 3, fixer]                     # Other agent verifiec, yet another fixes
+  - [reviewer, 3, fixer]                     # Other agent verifies and yet another fixes
   - [/lint, Bash]                            # Orchestrator must run a slash command
 conditions: |                                # Pre-spawn check
   Only spawn for authentication or data handling changes.
@@ -73,12 +73,43 @@ conditions: |                                # Pre-spawn check
 
 Step types are inferred from the array shape:
 
-| Pattern | Type | Behavior |
-|---------|------|----------|
-| `["prompt text"]` | Semantic | Gater evaluates agent output against the prompt |
-| `[agent, N]` | Review | Spawn reviewer agent, up to N rounds |
-| `[agent, N, fixer]` | Review + Fixer | REVISE routes to fixer agent instead of source |
-| `[/command, Tool1, Tool2]` | Command | Run a slash command with allowed tools |
+| Pattern | Behavior |
+|---------|----------|
+| `["prompt text"]` | Gater (Sonnet via `claude -p`) evaluates agent output against the prompt |
+| `[agent, N]` | Spawn reviewer agent, up to N rounds |
+| `[agent, N, fixer]`| REVISE routes to fixer agent instead of source |
+| `[/command, Tool1, Tool2]` | Orchestrator runs a slash command with allowed tools |
+
+### Example scenario
+
+You tell Claude: *"Spawn implementer scope=auth-fix to refactor the auth middleware."*
+
+Here's what the gate system does, step by step:
+
+**1. Pre-spawn check** (`PreToolUse:Agent`)
+The `conditions:` field says "Only spawn for authentication or data handling changes." A gater agent evaluates the prompt against this condition. Auth middleware qualifies — spawn allowed. If you'd asked for a CSS tweak, the spawn would be blocked and the orchestrator forced to adjust.
+
+**2. Agent works freely** (`SubagentStart` → agent runs)
+The implementer gets no output format instructions. It just does the refactoring — reads code, edits files, thinks in whatever structure comes naturally.
+
+**3. Artifact pivot** (`SubagentStop`, first fire)
+The implementer finishes and tries to stop. SubagentStop intercepts: *"Your work is done. Write a thorough summary of your findings to `.sessions/{session_id}/auth-fix/implementer.md`."* The agent is forced to continue and write its summary. Structure is requested only after free thinking is complete.
+
+**4. Semantic check** (`SubagentStop`, second fire)
+The implementer stops again, now with an artifact on disk. A separate Sonnet gater reads the artifact and judges: *"Does this show real implementation?"* (the first `verification:` step). If the gater says REVISE — the implementer is told to re-run and update its artifact. If PASS — the pipeline advances.
+
+**5. Reviewer gate** (`PreToolUse` blocks everything)
+**All tools except spawning `reviewer` are now blocked.\*** The orchestrator must spawn it. The reviewer reads the implementer's artifact, cross-references the codebase, and writes its own verdict with `Result: PASS` or `Result: REVISE`.
+
+\* With few exceptions: Read, Grep, Glob, TodoCreate, TodoUpdate, `/claude-gates:heal`.
+
+**6. Revision loop** (if REVISE)
+REVISE routes to the `fixer` agent (if the step is `[reviewer, 3, fixer]`). The fixer reads both the implementer's artifact and the reviewer's findings, produces corrections. The reviewer runs again on the updated work. This loops up to 3 rounds. If the reviewer's own review is sloppy, a meta-review catches it and forces the reviewer to retry.
+
+**7. Pipeline complete**
+All steps pass. The block lifts. The orchestrator can continue with other work. The full audit trail (artifacts, review findings, semantic check results) is in `.sessions/{session_id}/`.
+
+Throughout all of this, Claude (the orchestrator) never sees the gate machinery. It just sees tool calls being blocked with clear instructions on what to do next. The enforcement is invisible until you try to skip a step.
 
 ## Skills
 
