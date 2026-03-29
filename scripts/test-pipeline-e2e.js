@@ -438,7 +438,7 @@ test("full flow: role resolution through pipeline lifecycle", () => {
   try {
     engine.createPipeline(db, "role-scope", "e2e-builder", steps);
 
-    // Initial: SEMANTIC step is active — reviewer is NOT gate-agent yet
+    // Initial: SEMANTIC step is active — reviewer is NOT verifier yet
     assert.strictEqual(engine.resolveRole(db, "role-scope", "e2e-reviewer"), "ungated"); // step 0 is SEMANTIC, not REVIEW
     assert.strictEqual(engine.resolveRole(db, "role-scope", "e2e-builder"), "source");
     assert.strictEqual(engine.resolveRole(db, "role-scope", "e2e-fixer"), "ungated"); // not active yet
@@ -446,8 +446,8 @@ test("full flow: role resolution through pipeline lifecycle", () => {
     // Advance past SEMANTIC → step 1 (REVIEW_WITH_FIXER) becomes active
     engine.step(db, "role-scope", "PASS");
 
-    // Now reviewer IS gate-agent (REVIEW_WITH_FIXER step active)
-    assert.strictEqual(engine.resolveRole(db, "role-scope", "e2e-reviewer"), "gate-agent");
+    // Now reviewer IS verifier (REVIEW_WITH_FIXER step active)
+    assert.strictEqual(engine.resolveRole(db, "role-scope", "e2e-reviewer"), "verifier");
 
     // REVISE → fixer role activates
     engine.step(db, "role-scope", "REVISE");
@@ -456,7 +456,7 @@ test("full flow: role resolution through pipeline lifecycle", () => {
 
     // Fixer completes → reviewer re-runs
     engine.step(db, "role-scope", { role: "fixer", artifactVerdict: "PASS" });
-    assert.strictEqual(engine.resolveRole(db, "role-scope", "e2e-reviewer"), "gate-agent");
+    assert.strictEqual(engine.resolveRole(db, "role-scope", "e2e-reviewer"), "verifier");
   } finally {
     db.close();
     cleanup(dir);
@@ -623,7 +623,7 @@ console.log("\n=== E2E: gater pipeline participant ===");
 
 test("gater as REVIEW agent: engine.step advances (no short-circuit)", () => {
   // Verifies fix: gater fallback no longer exits early when gater is a pipeline participant.
-  // The normal processing path handles gater as gate-agent.
+  // The normal processing path handles gater as verifier.
   const dir = tmpDir();
   const db = crud.getDb(dir);
   try {
@@ -631,8 +631,8 @@ test("gater as REVIEW agent: engine.step advances (no short-circuit)", () => {
       { type: "REVIEW", agent: "gater", maxRounds: 3 },
     ]);
 
-    // Gater (as gate-agent) returns PASS → should advance pipeline
-    const a = engine.step(db, "gater-scope", { role: "gate-agent", artifactVerdict: "PASS", semanticVerdict: null });
+    // Gater (as verifier) returns PASS → should advance pipeline
+    const a = engine.step(db, "gater-scope", { role: "verifier", artifactVerdict: "PASS", semanticVerdict: null });
     assert.strictEqual(a.action, "done", "Gater PASS should complete the pipeline");
     assert.strictEqual(crud.getPipelineState(db, "gater-scope").status, "completed");
   } finally {
@@ -650,7 +650,7 @@ test("gater as REVIEW agent: REVISE routes back to source", () => {
     ]);
 
     // Gater returns REVISE → should route to source (not deadlock)
-    const a = engine.step(db, "gater-rev", { role: "gate-agent", artifactVerdict: "REVISE", semanticVerdict: null });
+    const a = engine.step(db, "gater-rev", { role: "verifier", artifactVerdict: "REVISE", semanticVerdict: null });
     assert.strictEqual(a.action, "source");
     assert.strictEqual(a.agent, "worker");
     assert.strictEqual(crud.getPipelineState(db, "gater-rev").status, "revision");

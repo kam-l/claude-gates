@@ -9,13 +9,13 @@
  *
  * Input can be:
  *   string — backward compat, treated as artifactVerdict
- *   { role: 'source'|'gate-agent'|'fixer'|'ungated',
+ *   { role: 'source'|'verifier'|'fixer'|'ungated',
  *     artifactVerdict: string,
  *     semanticVerdict?: 'PASS'|'FAIL'|null }
  *
  * Role-aware dispatch:
  *   source     — if pipeline in revision → reactivate revise step; else → normal step
- *   gate-agent — if semanticVerdict FAIL → retry gate; else → normal step on artifactVerdict
+ *   verifier — if semanticVerdict FAIL → retry gate; else → normal step on artifactVerdict
  *   fixer      — always reactivate the step that ordered revision
  *   ungated    — null (no pipeline interaction)
  *
@@ -76,7 +76,7 @@ function step(db, scope, input) {
     return reactivateRevisionStep(db, scope);
   }
 
-  if (role === "gate-agent" && semanticVerdict === "FAIL") {
+  if (role === "verifier" && semanticVerdict === "FAIL") {
     // Bad review → retry same gate agent (don't route to source/fixer)
     return retryGateAgent(db, scope);
   }
@@ -87,7 +87,7 @@ function step(db, scope, input) {
 
   // Source completing in normal state: only advance SEMANTIC steps.
   // COMMAND steps are advanced by /pass_or_revise verdict file (role=null).
-  // REVIEW/REVIEW_WITH_FIXER steps are advanced by the gate agent (role=gate-agent).
+  // REVIEW/REVIEW_WITH_FIXER steps are advanced by the gate agent (role=verifier).
   // Source completing just means "artifact ready" — return current action.
   if (role === "source" && activeStep.step_type !== "SEMANTIC") {
     return buildAction(db, scope);
@@ -136,7 +136,7 @@ function getAllNextActions(db) {
 
 /**
  * Determine an agent's role in a pipeline.
- * Returns: 'gate-agent' | 'fixer' | 'source' | 'ungated'
+ * Returns: 'verifier' | 'fixer' | 'source' | 'ungated'
  */
 function resolveRole(db, scope, agentType) {
   if (!scope) {
@@ -322,7 +322,7 @@ function resolveRoleInScope(db, scope, agentType, sourceAgent) {
   // Gate agent: active step has this agent as reviewer
   const activeStep = crud.getActiveStep(db, scope);
   if (activeStep && activeStep.agent === agentType && activeStep.status === "active") {
-    return "gate-agent";
+    return "verifier";
   }
 
   // Fixer: step in 'fix' status has this agent as fixer

@@ -5,4 +5,4 @@ role: gate
 model: sonnet
 ---
 
-Review the source artifact for completeness and correctness. Write your verdict to output_filepath.
+Review the source artifact for completeness and correctness.

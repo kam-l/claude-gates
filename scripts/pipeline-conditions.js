@@ -92,15 +92,15 @@ try {
           env: { ...process.env, CLAUDECODE: "" }
         }
       ).trim();
-      const condLines = condResult.split("\n").filter(l => l.trim());
-      const condLast = condLines.length > 0 ? condLines[condLines.length - 1].trim() : "";
-      const condMatch = /^(PASS|FAIL)(?:[:\s\u2014\u2013-]+(.*))?$/i.exec(condLast);
-      if (condMatch && condMatch[1].toUpperCase() === "FAIL") {
+      const condMatch = /^Result:\s*(PASS|FAIL|REVISE|CONVERGED)\b(.*)?$/mi.exec(condResult);
+      const condRaw = condMatch ? condMatch[1].toUpperCase() : "UNKNOWN";
+      const condVerdict = (condRaw === "FAIL" || condRaw === "REVISE") ? "FAIL" : "PASS";
+      if (condVerdict === "FAIL") {
         const reason = condMatch[2] ? condMatch[2].trim() : "Pre-spawn conditions check failed";
         msg.block("🔏", `Failed for ${bareAgentType}: ${reason}`);
         process.exit(0);
       }
-      msg.log("✅", `${condMatch ? condMatch[1].toUpperCase() : "UNKNOWN"} for ${bareAgentType}`);
+      msg.log("✅", `${condVerdict} for ${bareAgentType}`);
     } catch {
       // Semantic check failed — fail-open
       msg.log("⚠️", `Skipped for ${bareAgentType} (claude -p unavailable)`);

@@ -2,14 +2,13 @@
 /**
  * Pipeline v3 — SubagentStart injection hook.
  *
- * Injects output_filepath = {session_dir}/{agent_id}.md into agent context.
- * Uses agent_id (unique per spawn) — no parallel collision.
+ * Semantics first, structure later: no output format or filepath constraints
+ * are injected. Agents think freely. SubagentStop captures their output.
  *
- * SubagentStop moves the artifact from {agent_id}.md to {scope}/{agent_type}.md
- * using the definitive scope from agent_transcript_path.
+ * Only injects role context for verifiers (source artifact path, round info)
+ * and fixers (source artifact, gate agent info). Source agents get nothing.
  *
  * Creates pipeline from verification: steps (idempotent).
- * Enriches context for gate agents and fixers with source artifact info.
  *
  * Fail-open.
  */
@@ -34,12 +33,6 @@ try {
   const bareAgentType = agentType.includes(":") ? agentType.split(":").pop() : agentType;
   const sessionDir = getSessionDir(sessionId);
 
-  // Output path uses agent_id — unique per spawn, no collision possible.
-  // SubagentStop moves this to {scope}/{agent_type}.md after resolving scope from transcript.
-  const outputFilepath = agentId
-    ? `${sessionDir}/${agentId}.md`
-    : `${sessionDir}/${bareAgentType}.md`;
-
   // Best-effort pipeline creation + context enrichment via DB
   let pipelineContext = "";
   const db = getDb(sessionDir);
@@ -62,7 +55,7 @@ try {
       // Role-based context enrichment
       const role = engine.resolveRole(db, scope, bareAgentType);
 
-      if (role === "gate-agent") {
+      if (role === "verifier") {
         // Gate agent: inject source artifact path + round info
         const activeStep = getActiveStep(db, scope);
         if (activeStep) {
@@ -97,17 +90,30 @@ try {
             `gate_round=${fixStep.round + 1}/${fixStep.max_rounds}\n`;
         }
       }
-      // source / ungated → no extra context (just output_filepath)
+      // Source in revision → inject artifact path so it knows what to revise
+      if (role === "source") {
+        const state = getPipelineState(db, scope);
+        if (state && state.status === "revision") {
+          const artifactPath = `${sessionDir}/${scope}/${bareAgentType}.md`;
+          pipelineContext =
+            `role=source\n` +
+            `revision=true\n` +
+            `artifact=${artifactPath}\n` +
+            `Update your artifact at this path to address the review feedback.\n`;
+        }
+      }
+      // source (first run) / ungated → no context injection (semantics first)
     }
   } finally {
     db.close();
   }
 
+  // Only inject if there's role context to provide (verifier/fixer)
+  if (!pipelineContext) process.exit(0);
+
   const context =
     `<agent_gate importance="critical">\n` +
-    `output_filepath=${outputFilepath}\n` +
     pipelineContext +
-    `Write your artifact to this exact path. Last line must be: Result: PASS or Result: FAIL\n` +
     `</agent_gate>`;
 
   process.stdout.write(JSON.stringify({
