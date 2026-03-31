@@ -37,8 +37,16 @@ try {
   let pipelineContext = "";
   const db = getDb(sessionDir);
   try {
-    // Find scope registered by conditions.js (real scope, not _pending)
-    const scope = findAgentScope(db, bareAgentType);
+    // Find scope: prefer pending marker (accurate for parallel agents), fall back to DB
+    let scope = null;
+    const pendingMarker = path.join(sessionDir, `.pending-scope-${bareAgentType}`);
+    try {
+      if (fs.existsSync(pendingMarker)) {
+        scope = fs.readFileSync(pendingMarker, "utf-8").trim();
+        fs.unlinkSync(pendingMarker);
+      }
+    } catch {}
+    if (!scope) scope = findAgentScope(db, bareAgentType);
     if (scope) {
 
       // Create pipeline from verification: steps (idempotent — no-op if already exists)
@@ -90,18 +98,16 @@ try {
             `gate_round=${fixStep.round + 1}/${fixStep.max_rounds}\n`;
         }
       }
-      // Source in revision → inject artifact path so it knows what to revise
-      if (role === "source") {
-        const state = getPipelineState(db, scope);
-        if (state && state.status === "revision") {
-          const artifactPath = `${sessionDir}/${scope}/${bareAgentType}.md`;
-          pipelineContext =
-            `role=source\n` +
-            `revision=true\n` +
-            `artifact=${artifactPath}\n` +
-            `Update your artifact at this path to address the review feedback.\n`;
+      // Verification file exists → inject it (file existence IS the signal)
+      try {
+        const verificationFile = path.join(sessionDir, scope, `${bareAgentType}-verification.md`);
+        if (fs.existsSync(verificationFile)) {
+          const findings = fs.readFileSync(verificationFile, "utf-8");
+          pipelineContext +=
+            `artifact=${sessionDir}/${scope}/${bareAgentType}.md\n` +
+            `\nReviewer findings (address ALL issues before resubmitting):\n${findings}\n`;
         }
-      }
+      } catch {}
       // source (first run) / ungated → no context injection (semantics first)
     }
   } finally {
