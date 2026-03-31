@@ -153,6 +153,15 @@ try {
 
     // Mark agent as running — pipeline-block skips blocking while marker exists
     try { fs.writeFileSync(agentRunningMarker(sessionDir, scope), "", "utf-8"); } catch {}
+
+    // Write pending scope marker — SubagentStart (injection) reads this to resolve scope
+    // (SubagentStart doesn't have the prompt, so it can't extract scope= itself)
+    try { fs.writeFileSync(path.join(sessionDir, `.pending-scope-${bareAgentType}`), scope, "utf-8"); } catch {}
+
+    // Warn orchestrator that this agent's pipeline will block other work
+    if (mdContent && requiresScope(mdContent)) {
+      msg.log("🔏", `${bareAgentType} (scope=${scope}) has verification gates — process its results before starting unrelated work.`);
+    }
   } finally {
     db.close();
   }

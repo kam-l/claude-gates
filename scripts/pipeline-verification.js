@@ -130,7 +130,7 @@ function writeAudit(sessionDir, scope, agentType, artifactPath, semanticResult) 
   try {
     const auditDir = scope ? path.join(sessionDir, scope) : sessionDir;
     if (!fs.existsSync(auditDir)) fs.mkdirSync(auditDir, { recursive: true });
-    const auditFile = path.join(auditDir, `.gate-${agentType}.audit.md`);
+    const auditFile = path.join(auditDir, `${agentType}-verification.md`);
     fs.writeFileSync(
       auditFile,
       `# Pipeline: ${agentType}\n` +
@@ -155,7 +155,7 @@ function gatherScopeContext(sessionDir, scope, agentType) {
   try {
     const scopeDir = path.join(sessionDir, scope);
     for (const file of fs.readdirSync(scopeDir)) {
-      if (!file.endsWith(".md") || file === `${bare}.md` || file.startsWith(".gate-")) continue;
+      if (!file.endsWith(".md") || file === `${bare}.md` || file === `${bare}-verification.md`) continue;
       try {
         context += `\n--- ${scope}/${file} ---\n${fs.readFileSync(path.join(scopeDir, file), "utf-8")}\n`;
       } catch {}
@@ -244,10 +244,24 @@ try {
         if (!fs.existsSync(scopeDir)) fs.mkdirSync(scopeDir, { recursive: true });
         if (!fs.existsSync(correctPath) && !isContinuation) {
           // First stop, no artifact file — pivot: tell agent to write it
+          // Include verification context so agent knows what it'll be judged on
           const writePath = correctPath.replace(/\\/g, "/");
+          let pivotMsg = `Your work is done. Write your complete findings to: ${writePath}`;
+          pivotMsg += `\nThis artifact will be verified. Include evidence from tool output (file reads, diffs, test results) — assertions without evidence will be rejected.`;
+          try {
+            const role = engine.resolveRole(db, scope, bareAgentType);
+            const activeStep = crud.getActiveStep(db, scope);
+            if (role === "verifier") {
+              pivotMsg += `\nYou are a verifier. End with exactly one: Result: PASS, Result: REVISE, Result: FAIL, or Result: CONVERGED.`;
+            } else if (activeStep && activeStep.step_type === "SEMANTIC" && activeStep.prompt) {
+              pivotMsg += `\nVerification criteria: ${activeStep.prompt}`;
+            } else if (activeStep && (activeStep.step_type === "REVIEW" || activeStep.step_type === "REVIEW_WITH_FIXER")) {
+              pivotMsg += `\nA reviewer (${activeStep.agent}) will evaluate this artifact next.`;
+            }
+          } catch {}
           process.stdout.write(JSON.stringify({
             decision: "block",
-            reason: `[ClaudeGates] Your work is done. Now write a thorough summary of your complete findings to: ${writePath}`
+            reason: `[ClaudeGates] ${pivotMsg}`
           }));
           process.exit(0);
         } else if (!fs.existsSync(correctPath) && isContinuation) {

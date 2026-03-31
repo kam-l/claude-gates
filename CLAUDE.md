@@ -8,6 +8,12 @@ Declarative pipeline gates — `verification:` unified array format in agent fro
 - Repository: `https://github.com/kam-l/claude-gates`
 - **Version bump required for every script change.** Plugin cache keyed by version.
 
+## Git Workflow
+
+- **`master`** is protected — no direct pushes, PRs only, enforce admins, linear history.
+- All work happens on feature branches. Merge via PR.
+- Tags/releases only from merges to `master`.
+
 ## Build / Test
 
 ```bash

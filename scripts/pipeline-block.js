@@ -20,7 +20,16 @@ const engine = require("./pipeline.js");
 const { VERDICT_RE, getSessionDir, agentRunningMarker } = require("./pipeline-shared.js");
 const msg = require("./messages.js");
 
-const ALLOWED_TOOLS = ["Read", "Glob", "Grep", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage"];
+const ALLOWED_TOOLS = ["Read", "Glob", "Grep", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage", "ToolSearch"];
+
+function sourceReason(act) {
+  const step = act.step;
+  if (!step) return ".";
+  if (step.status === "fix") return `: reviewer found issues — fixer must address them before next review round.`;
+  if (step.status === "revise") return `: reviewer found issues — source must revise the artifact.`;
+  if (step.round > 0) return `: revision round ${step.round} — address reviewer feedback.`;
+  return ".";
+}
 
 try {
   const data = JSON.parse(fs.readFileSync(0, "utf-8"));
@@ -128,21 +137,34 @@ try {
   // COMMAND step: allow listed tools
   if (commandAllowedTools.has(toolName)) process.exit(0);
 
-  // Build block message — merge pending notifications into reason
+  // Build block message — actions as clear instructions, notifications separate
   const parts = [];
   for (const act of actions) {
     const agent = act.agent || (act.step && act.step.source_agent);
     if (act.action === "spawn") {
-      parts.push(`Spawn ${agent} (scope=${act.scope}, round ${act.round + 1}/${act.maxRounds}).`);
+      const spawnRound = act.round + 1;
+      const reason = spawnRound === 1 ? "reviewer needs to evaluate the artifact" : "re-review after revision";
+      parts.push(`Spawn ${agent} (scope=${act.scope}, round ${spawnRound}/${act.maxRounds}): ${reason}.`);
     } else if (act.action === "source" || act.action === "semantic") {
-      parts.push(`Resume ${agent} (scope=${act.scope})${pending ? " — " + pending : "."}`);
+      const round = act.step ? act.step.round : 0;
+      const verb = round > 0 ? "Resume" : "Spawn";
+      const reason = sourceReason(act);
+      parts.push(`${verb} ${agent} (scope=${act.scope})${reason}`);
     } else if (act.action === "command") {
       parts.push(`Run ${act.command}, then /pass_or_revise (scope=${act.scope}).`);
     }
   }
 
-  const reason = parts.join(" ");
-  const out = { decision: "block", reason: msg.fmt("🔒", reason) };
+  // Frame as instructions, not errors — Claude Code wraps this in "Error:" which misleads the orchestrator
+  let message = `Pipeline actions pending (this is normal flow, not an error). Do these first:\n` + parts.join("\n");
+
+  // Append deduplicated notifications separately — don't pollute action instructions
+  if (pending) {
+    const uniqueNotes = [...new Set(pending.split("\n").map(l => l.trim()).filter(Boolean))];
+    message += `\nContext: ` + uniqueNotes.join(" | ");
+  }
+
+  const out = { decision: "block", reason: msg.fmt("🔒", message) };
   process.stdout.write(JSON.stringify(out));
   process.exit(0);
 } catch {
