@@ -19,6 +19,7 @@ const { getDb } = require("./pipeline-db.js");
 const engine = require("./pipeline.js");
 const { VERDICT_RE, getSessionDir, agentRunningMarker } = require("./pipeline-shared.js");
 const msg = require("./messages.js");
+const tracing = require("./tracing.js");
 
 const ALLOWED_TOOLS = ["Read", "Glob", "Grep", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "SendMessage", "ToolSearch"];
 
@@ -40,6 +41,7 @@ try {
   const toolName = data.tool_name || "";
   const toolInput = data.tool_input || {};
   const callerAgent = data.agent_type || "";
+  let traceScopes = {}; // { scope: trace_id } — stashed before db.close()
 
   const sessionDir = getSessionDir(sessionId);
 
@@ -78,6 +80,17 @@ try {
 
     if (verdictProcessed) {
       actions = engine.getAllNextActions(db);
+    }
+
+    // Stash trace IDs before closing DB (Langfuse needs them after db.close)
+    traceScopes = {};
+    if (actions && actions.length > 0) {
+      for (const act of actions) {
+        try {
+          const row = db.prepare("SELECT trace_id FROM pipeline_state WHERE scope = ?").get(act.scope);
+          if (row && row.trace_id) traceScopes[act.scope] = row.trace_id;
+        } catch {}
+      }
     }
   } finally {
     db.close();
@@ -154,6 +167,20 @@ try {
       parts.push(`Run ${act.command}, then /pass_or_revise (scope=${act.scope}).`);
     }
   }
+
+  // Langfuse: trace block decisions (fire-and-forget, no DB needed — trace IDs stashed earlier)
+  try {
+    const { langfuse, enabled } = tracing.init();
+    if (enabled) {
+      for (const act of actions) {
+        const traceId = traceScopes[act.scope];
+        if (!traceId) continue;
+        const trace = langfuse.trace({ id: traceId, name: `pipeline:${act.scope}`, sessionId });
+        trace.span({ name: "tool-blocked", input: { toolName, scope: act.scope, expectedAgent: act.agent } }).end();
+      }
+      tracing.flush(langfuse, enabled);
+    }
+  } catch {} // fail-open
 
   // Frame as instructions, not errors — Claude Code wraps this in "Error:" which misleads the orchestrator
   let message = `Pipeline actions pending (this is normal flow, not an error). Do these first:\n` + parts.join("\n");

@@ -6,10 +6,30 @@ Quality gates for Claude Code agents. Your agents shall not pass without earning
 [![Gates: 7](https://img.shields.io/badge/gates-7-orange)]()
 [![Tests](https://github.com/kam-l/claude-gates/actions/workflows/test.yml/badge.svg)](https://github.com/kam-l/claude-gates/actions/workflows/test.yml)
 [![Version](https://img.shields.io/github/v/tag/kam-l/claude-gates?label=version)](https://github.com/kam-l/claude-gates/releases)
+[![Coverage](https://codecov.io/gh/kam-l/claude-gates/branch/master/graph/badge.svg)](https://codecov.io/gh/kam-l/claude-gates)
 
-<p align="center">
-  <img src="gandalf.png" alt="You shall not pass!" width="400">
-</p>
+```
+● Updated plan
+  ⎿  /plan to preview
+  ⎿  PreToolUse:ExitPlanMode hook returned blocking  ⎿  [ClaudeGates] 🔐 "rippling-wandering-crane.md"
+      error                                              (205 lines) unverified. Spawn
+                                                        claude-gates:gater with scope=verify-plan.
+  ⎿  Error: [ClaudeGates] 🔐 "rippling-wandering-crane.md" (205 lines) unverified. Spawn
+     claude-gates:gater with scope=verify-plan.
+
+● claude-gates:gater(Verify plan via gater review)
+  ⎿  Done (28 tool uses · 30.3k tokens · 3m 49s)
+  (ctrl+o to expand)
+
+  Read 1 file (ctrl+o to expand)
+
+● Good catches from the gater. Let me address all findings in the plan.
+```
+
+<details>
+<summary>Flame of Udûn</summary>
+<img src="gandalf.png" alt="You shall not pass!" width="400">
+</details>
 
 ## Install
 
@@ -147,7 +167,21 @@ State:  pipeline-db.js ─ SQLite tables: pipeline_state, pipeline_steps,
 Config: claude-gates-config.js ─ reads claude-gates.json
 ```
 
-~4,900 LOC across 19 scripts. 93 unit tests + 30 end-to-end tests.
+~4,900 LOC across 19 scripts. 93 unit tests + 30 end-to-end tests. See [CHANGELOG.md](CHANGELOG.md) for version history.
+
+## Performance
+
+Benchmarks on the pipeline engine (1,000 iterations, SQLite WAL mode):
+
+| Benchmark | Per op | Ops/sec |
+|-----------|--------|---------|
+| Pipeline creation (3 steps) | 0.24 ms | 4,117 |
+| State transition (step → PASS) | 0.98 ms | 1,024 |
+| DB read (getPipelineState) | 0.03 ms | 31,178 |
+| DB write (setVerdict) | 0.04 ms | 24,148 |
+| Concurrent isolation (10 pipelines) | 9.76 ms | 102 |
+
+Run `node scripts/benchmark.js` to reproduce.
 
 ## Configuration
 

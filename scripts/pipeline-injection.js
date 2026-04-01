@@ -19,6 +19,7 @@ const { getDb, findAgentScope, getAgent, getActiveStep, getStepByStatus, getPipe
 const { parseVerification, findAgentMd, getSessionDir } = require("./pipeline-shared.js");
 const engine = require("./pipeline.js");
 const msg = require("./messages.js");
+const tracing = require("./tracing.js");
 
 const HOME = process.env.USERPROFILE || process.env.HOME || "";
 
@@ -57,6 +58,12 @@ try {
         if (steps) {
           engine.createPipeline(db, scope, bareAgentType, steps);
           msg.notify(sessionDir, "⚡", "pipeline", `Initialized ${steps.length} step(s) for scope="${scope}": ${steps.map(s => s.type).join(" → ")}.`);
+
+          // Langfuse: record pipeline creation as a trace span
+          const { langfuse, enabled } = tracing.init();
+          const trace = tracing.getOrCreateTrace(langfuse, enabled, db, scope, sessionId);
+          trace.span({ name: "pipeline-created", input: { scope, sourceAgent: bareAgentType, stepTypes: steps.map(s => s.type) } }).end();
+          tracing.flush(langfuse, enabled);
         }
       }
 

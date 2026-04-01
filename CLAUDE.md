@@ -8,12 +8,6 @@ Declarative pipeline gates — `verification:` unified array format in agent fro
 - Repository: `https://github.com/kam-l/claude-gates`
 - **Version bump required for every script change.** Plugin cache keyed by version.
 
-## Git Workflow
-
-- **`master`** is protected — no direct pushes, PRs only, enforce admins, linear history.
-- All work happens on feature branches. Merge via PR.
-- Tags/releases only from merges to `master`.
-
 ## Build / Test
 
 ```bash
@@ -55,8 +49,8 @@ conditions: |                         # Pre-spawn check (blocks on FAIL)
 - SQLite via `better-sqlite3`. `session-cleanup.js` sweeps both `.sessions/` and legacy `~/.claude/sessions/`.
 - Engine: `scripts/pipeline.js` — owns ALL state transitions via `step()`.
 - v3 DB: `scripts/pipeline-db.js` — tables: `pipeline_state`, `pipeline_steps`, `agents`, `edits`, `tool_history`.
-- Supporting: `claude-gates-db.js` (plan-gate, stop-gate), `edit-gate.js` (edit tracking), `claude-gates-config.js` (config + commit-gate).
+- Supporting: `scripts/claude-gates-db.js` (plan-gate, stop-gate), `scripts/edit-gate.js` (edit tracking), `scripts/claude-gates-config.js` (config + commit-gate).
 
 ## Configuration
 
-- Create `claude-gates.json` at repo root to configure (optional). Module: `scripts/claude-gates-config.js`.
+- `claude-gates.json` at repo root (optional). Module: `scripts/claude-gates-config.js`.

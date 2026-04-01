@@ -31,6 +31,7 @@ const { parseVerification, findAgentMd, VERDICT_RE, getSessionDir, agentRunningM
 const crud = require("./pipeline-db.js");
 const engine = require("./pipeline.js");
 const msg = require("./messages.js");
+const tracing = require("./tracing.js");
 
 const PROJECT_ROOT = process.cwd();
 const HOME = process.env.USERPROFILE || process.env.HOME || "";
@@ -345,16 +346,21 @@ try {
     // Scope context for semantic checks
     const scopeContext = gatherScopeContext(sessionDir, scope, agentType);
 
+    // ── Langfuse tracing ──
+    const { langfuse, enabled } = tracing.init();
+    const trace = tracing.getOrCreateTrace(langfuse, enabled, db, scope, sessionId);
+
     // ── Dispatch by role ──
 
     if (role === "source") {
-      handleSource(db, scope, bareAgentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir);
+      handleSource(db, scope, bareAgentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir, trace);
     } else if (role === "verifier") {
-      handleVerifier(db, scope, bareAgentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir);
+      handleVerifier(db, scope, bareAgentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir, trace);
     } else if (role === "fixer") {
-      handleFixer(db, scope, bareAgentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir);
+      handleFixer(db, scope, bareAgentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir, trace);
     }
 
+    tracing.flush(langfuse, enabled);
   } finally {
     db.close();
   }
@@ -367,7 +373,7 @@ try {
 
 // ── Role handlers ────────────────────────────────────────────────────
 
-function handleSource(db, scope, agentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir) {
+function handleSource(db, scope, agentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir, trace) {
   // If pipeline is in revision state, reactivate the step FIRST.
   // This ensures the SEMANTIC step is "active" again before we check for it.
   const state = crud.getPipelineState(db, scope);
@@ -378,6 +384,7 @@ function handleSource(db, scope, agentType, artifactPath, artifactContent, artif
     if (!nextAction || nextAction.action !== "semantic") {
       recordVerdict(db, scope, agentType, artifactVerdict);
       logAction(sessionDir, nextAction, scope);
+      trace.span({ name: "engine-step", input: { role: "source", artifactVerdict }, output: { action: nextAction && nextAction.action } }).end();
       return;
     }
     // Fall through: SEMANTIC step reactivated, run the check now
@@ -392,6 +399,7 @@ function handleSource(db, scope, agentType, artifactPath, artifactContent, artif
     semanticResult = runSemanticCheck(activeStep.prompt, artifactContent, artifactPath, scopeContext, false);
     writeAudit(sessionDir, scope, agentType, artifactPath, semanticResult);
     semanticVerdict = semanticResult ? semanticResult.verdict : null;
+    trace.span({ name: "semantic-check", input: { prompt: activeStep.prompt }, output: { verdict: semanticVerdict } }).end();
   }
 
   // Source agents produce artifacts — they don't judge themselves.
@@ -403,6 +411,7 @@ function handleSource(db, scope, agentType, artifactPath, artifactContent, artif
   // Engine call — for normal state, processes verdict on active step
   const nextAction = engine.step(db, scope, { role: "source", artifactVerdict: finalVerdict, semanticVerdict });
   logAction(sessionDir, nextAction, scope);
+  trace.span({ name: "engine-step", input: { role: "source", artifactVerdict: finalVerdict, semanticVerdict }, output: { action: nextAction && nextAction.action } }).end();
 
   if (finalVerdict === "FAIL") {
     const reason = semanticResult && semanticResult.reason ? semanticResult.reason : "Semantic validation failed";
@@ -410,7 +419,7 @@ function handleSource(db, scope, agentType, artifactPath, artifactContent, artif
   }
 }
 
-function handleVerifier(db, scope, agentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir) {
+function handleVerifier(db, scope, agentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir, trace) {
   // Implicit semantic check for gate agents
   const semanticResult = runSemanticCheck(
     "Is this review thorough? Does it identify real issues or correctly approve? Is the verdict justified given the scope artifacts?",
@@ -421,14 +430,15 @@ function handleVerifier(db, scope, agentType, artifactPath, artifactContent, art
   const semanticVerdict = semanticResult ? semanticResult.verdict : null;
   const finalVerdict = (semanticVerdict === "FAIL") ? "FAIL" : artifactVerdict;
   recordVerdict(db, scope, agentType, finalVerdict);
+  trace.span({ name: "semantic-check", input: { prompt: "implicit-verifier-check" }, output: { verdict: semanticVerdict } }).end();
 
   // Single engine call — engine handles gate-retry (semantic FAIL) vs normal step
   const nextAction = engine.step(db, scope, { role: "verifier", artifactVerdict, semanticVerdict });
   logAction(sessionDir, nextAction, scope);
-
+  trace.span({ name: "engine-step", input: { role: "verifier", artifactVerdict, semanticVerdict }, output: { action: nextAction && nextAction.action } }).end();
 }
 
-function handleFixer(db, scope, agentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir) {
+function handleFixer(db, scope, agentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir, trace) {
   // Implicit semantic check for fixers
   const semanticResult = runSemanticCheck(
     "Did this fix address the revision instructions?",
@@ -438,10 +448,12 @@ function handleFixer(db, scope, agentType, artifactPath, artifactContent, artifa
 
   const semanticVerdict = semanticResult ? semanticResult.verdict : null;
   recordVerdict(db, scope, agentType, artifactVerdict);
+  trace.span({ name: "semantic-check", input: { prompt: "implicit-fixer-check" }, output: { verdict: semanticVerdict } }).end();
 
   // Single engine call — engine always reactivates the revision step for fixers
   const nextAction = engine.step(db, scope, { role: "fixer", artifactVerdict, semanticVerdict });
   logAction(sessionDir, nextAction, scope);
+  trace.span({ name: "engine-step", input: { role: "fixer", artifactVerdict, semanticVerdict }, output: { action: nextAction && nextAction.action } }).end();
 }
 
 // ── Logging helper ───────────────────────────────────────────────────
