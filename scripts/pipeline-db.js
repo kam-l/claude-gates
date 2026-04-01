@@ -6,6 +6,34 @@
  *
  * Tables: pipeline_steps, pipeline_state, agents, edits, tool_history.
  * Requires better-sqlite3 (native SQLite binding).
+ *
+ * C# analogy: this entire module is like a static DbContext/Repository with
+ * typed query methods. Each function takes a `db` (≈ SqlConnection) and returns
+ * plain objects (≈ anonymous types or records — JS has no classes here).
+ *
+ * @typedef {Object} PipelineState
+ * @property {string}  scope         - Primary key — pipeline scope name
+ * @property {string}  source_agent  - Agent that owns this pipeline
+ * @property {string}  status        - 'normal' | 'revision' | 'completed' | 'failed'
+ * @property {number}  current_step  - Index of current step
+ * @property {number|null} revision_step - Index of step being revised (null if not in revision)
+ * @property {number}  total_steps   - Total number of verification steps
+ * @property {string|null} trace_id  - Langfuse trace ID for cross-process correlation
+ * @property {string}  created_at    - ISO timestamp
+ *
+ * @typedef {Object} PipelineStep
+ * @property {string}  scope
+ * @property {number}  step_index
+ * @property {string}  step_type     - 'SEMANTIC' | 'COMMAND' | 'REVIEW' | 'REVIEW_WITH_FIXER'
+ * @property {string|null} prompt    - Semantic check prompt (SEMANTIC steps only)
+ * @property {string|null} command   - Slash command (COMMAND steps only)
+ * @property {string|null} allowed_tools - Comma-separated tool names (COMMAND steps only)
+ * @property {string|null} agent     - Reviewer agent name (REVIEW/REVIEW_WITH_FIXER steps only)
+ * @property {number}  max_rounds    - Max revision rounds before exhaustion
+ * @property {string|null} fixer     - Fixer agent name (REVIEW_WITH_FIXER steps only)
+ * @property {string}  status        - 'pending' | 'active' | 'passed' | 'revise' | 'fix' | 'failed'
+ * @property {number}  round         - Current revision round (0 = first run)
+ * @property {string}  source_agent
  */
 
 const fs = require("fs");
@@ -66,6 +94,7 @@ CREATE TABLE IF NOT EXISTS pipeline_state (
   current_step   INTEGER NOT NULL DEFAULT 0,
   revision_step  INTEGER,
   total_steps    INTEGER NOT NULL,
+  trace_id       TEXT,
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -108,17 +137,36 @@ function getDb(sessionDir) {
   db.pragma("journal_mode = WAL");
   db.exec(SCHEMA_SQL);
   db.exec(TRIGGER_SQL);
+  // Migration: add trace_id column for Langfuse tracing (idempotent)
+  try { db.exec("ALTER TABLE pipeline_state ADD COLUMN trace_id TEXT"); } catch {}
   return db;
 }
 
 // ── Pipeline CRUD ────────────────────────────────────────────────────
+// C# analogy: these are like a static Repository class with methods that
+// take a DbConnection as the first parameter instead of using DI.
 
+/**
+ * Insert a new pipeline_state row. Like: INSERT INTO PipelineState VALUES(...)
+ * @param {import("better-sqlite3").Database} db - SQLite connection (like SqlConnection)
+ * @param {string} scope - Pipeline scope name (primary key)
+ * @param {string} sourceAgent - Agent that owns this pipeline
+ * @param {number} totalSteps - Number of verification steps
+ */
 function insertPipeline(db, scope, sourceAgent, totalSteps) {
   db.prepare(
     "INSERT INTO pipeline_state (scope, source_agent, status, current_step, total_steps) VALUES (?, ?, 'normal', 0, ?)"
   ).run(scope, sourceAgent, totalSteps);
 }
 
+/**
+ * Insert a pipeline step. First step (index 0) starts as "active", rest as "pending".
+ * @param {import("better-sqlite3").Database} db
+ * @param {string} scope
+ * @param {number} stepIndex - Zero-based position in the pipeline
+ * @param {{ type: string, prompt?: string, command?: string, allowedTools?: string[], agent?: string, maxRounds?: number, fixer?: string }} step
+ * @param {string} sourceAgent
+ */
 function insertStep(db, scope, stepIndex, step, sourceAgent) {
   db.prepare(
     "INSERT INTO pipeline_steps (scope, step_index, step_type, prompt, command, allowed_tools, agent, max_rounds, fixer, status, round, source_agent) " +
@@ -136,6 +184,7 @@ function insertStep(db, scope, stepIndex, step, sourceAgent) {
   );
 }
 
+/** @param {import("better-sqlite3").Database} db  @param {string} scope  @returns {boolean} */
 function pipelineExists(db, scope) {
   return !!db.prepare("SELECT 1 FROM pipeline_state WHERE scope = ? LIMIT 1").get(scope);
 }
@@ -146,6 +195,7 @@ function getStep(db, scope, stepIndex) {
   ).get(scope, stepIndex) || null;
 }
 
+/** @param {import("better-sqlite3").Database} db  @param {string} scope  @returns {PipelineStep|null} */
 function getActiveStep(db, scope) {
   return db.prepare(
     "SELECT * FROM pipeline_steps WHERE scope = ? AND status = 'active' LIMIT 1"
@@ -164,6 +214,7 @@ function getSteps(db, scope) {
   ).all(scope);
 }
 
+/** @param {import("better-sqlite3").Database} db  @param {string} scope  @returns {PipelineState|null} */
 function getPipelineState(db, scope) {
   return db.prepare("SELECT * FROM pipeline_state WHERE scope = ?").get(scope) || null;
 }
@@ -180,6 +231,12 @@ function updateStepStatus(db, scope, stepIndex, status, round) {
   }
 }
 
+/**
+ * Update arbitrary columns on pipeline_state. Like a dynamic UPDATE SET.
+ * @param {import("better-sqlite3").Database} db
+ * @param {string} scope
+ * @param {Object<string, any>} updates - Column name → new value (e.g., { status: "completed" })
+ */
 function updatePipelineState(db, scope, updates) {
   const sets = [];
   const vals = [];
@@ -200,6 +257,7 @@ function deletePipeline(db, scope) {
   del();
 }
 
+/** Returns all pipelines with status 'normal' or 'revision'. @returns {PipelineState[]} */
 function getActivePipelines(db) {
   return db.prepare(
     "SELECT * FROM pipeline_state WHERE status IN ('normal', 'revision')"

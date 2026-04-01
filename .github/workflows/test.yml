@@ -14,4 +14,11 @@ jobs:
         with:
           node-version: 20
       - run: npm install
-      - run: node scripts/pipeline-test.js
+      - run: npx c8 --reporter=text --reporter=lcov node scripts/pipeline-test.js
+      - run: npx c8 --reporter=text --reporter=lcov --clean=false node scripts/test-pipeline-e2e.js
+      - uses: codecov/codecov-action@v4
+        with:
+          files: coverage/lcov.info
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

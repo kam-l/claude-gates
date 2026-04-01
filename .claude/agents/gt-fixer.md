@@ -1,7 +1,6 @@
 ---
 name: gt-fixer
 description: "Internal gate agent — invoked automatically when gt-reviewer returns REVISE. Fixes issues."
-role: fixer
 model: sonnet
 ---
 

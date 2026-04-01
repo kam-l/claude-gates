@@ -1,11 +1,13 @@
 {
   "name": "claude-gates",
-  "version": "3.5.5",
+  "version": "3.6.0",
   "private": true,
   "dependencies": {
-    "better-sqlite3": "^12.8.0"
+    "better-sqlite3": "^12.8.0",
+    "langfuse": "^3.38.6"
   },
   "devDependencies": {
-    "better-sqlite3": "^12.8.0"
+    "better-sqlite3": "^12.8.0",
+    "c8": "^10.1.3"
   }
 }

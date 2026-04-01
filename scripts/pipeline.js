@@ -27,6 +27,21 @@
  *   { action: 'done',    scope }
  *   { action: 'failed',  scope, step, round, maxRounds }
  *   null — no active pipeline
+ *
+ * C# analogy: this module is a state machine engine, like a custom
+ * IStateMachine<PipelineState> with step() as the transition function.
+ * Think of it as: each call to step() is like dispatching a Command
+ * to a state machine that returns the next Action to take.
+ *
+ * @typedef {Object} Action
+ * @property {string} action - 'spawn'|'command'|'source'|'semantic'|'done'|'failed'
+ * @property {string} [agent] - Agent to spawn/resume
+ * @property {string} scope - Pipeline scope
+ * @property {import("./pipeline-db.js").PipelineStep} [step] - Current step info
+ * @property {number} [round] - Current round (for spawn/failed)
+ * @property {number} [maxRounds] - Max rounds (for spawn/failed)
+ * @property {string} [command] - Slash command (for command action)
+ * @property {string[]} [allowedTools] - Allowed tools (for command action)
  */
 
 const crud = require("./pipeline-db.js");

@@ -27,6 +27,7 @@ let v2Db, v3Db;
 try { v2Db = require("./claude-gates-db.js"); } catch {}
 try { v3Db = require("./pipeline-db.js"); } catch {}
 const { getSessionDir } = require("./pipeline-shared.js");
+const tracing = require("./tracing.js");
 
 try {
   const data = JSON.parse(fs.readFileSync(0, "utf-8"));
@@ -131,6 +132,20 @@ try {
       }
     }
   } catch {} // v3 tables may not exist
+
+  // Langfuse: emit session-summary spans for each pipeline
+  try {
+    const { langfuse, enabled } = tracing.init();
+    if (enabled) {
+      const allPipelines = db.prepare("SELECT scope, status, trace_id FROM pipeline_state").all();
+      for (const p of allPipelines) {
+        if (!p.trace_id) continue;
+        const trace = langfuse.trace({ id: p.trace_id, name: `pipeline:${p.scope}`, sessionId });
+        trace.span({ name: "session-summary", input: { scope: p.scope, status: p.status, issueCount: issues.length } }).end();
+      }
+      tracing.flush(langfuse, enabled);
+    }
+  } catch {} // fail-open
 
   // ── Edit tracking ──
   try {
