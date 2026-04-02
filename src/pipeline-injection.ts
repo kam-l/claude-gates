@@ -1,0 +1,143 @@
+#!/usr/bin/env node
+/**
+ * Pipeline v3 — SubagentStart injection hook.
+ *
+ * Semantics first, structure later: no output format or filepath constraints
+ * are injected. Agents think freely. SubagentStop captures their output.
+ *
+ * Only injects role context for verifiers (source artifact path, round info)
+ * and fixers (source artifact, gate agent info). Source agents get nothing.
+ *
+ * Creates pipeline from verification: steps (idempotent).
+ *
+ * Fail-open.
+ */
+
+import fs from "fs";
+import path from "path";
+import { getDb, findAgentScope, getAgent, getActiveStep, getStepByStatus, getPipelineState } from "./pipeline-db";
+import { parseVerification, findAgentMd, getSessionDir } from "./pipeline-shared";
+import * as engine from "./pipeline";
+import * as msg from "./messages";
+import * as tracing from "./tracing";
+
+const HOME = process.env.USERPROFILE || process.env.HOME || "";
+
+try {
+  const data: any = JSON.parse(fs.readFileSync(0, "utf-8"));
+  const sessionId = data.session_id || "";
+  const agentType = data.agent_type || "";
+  const agentId = data.agent_id || "";
+
+  if (!sessionId || !agentType) process.exit(0);
+
+  const bareAgentType = agentType.includes(":") ? agentType.split(":").pop() : agentType;
+  const sessionDir = getSessionDir(sessionId);
+
+  // Best-effort pipeline creation + context enrichment via DB
+  let pipelineContext = "";
+  const db = getDb(sessionDir);
+  try {
+    // Find scope: prefer pending marker (accurate for parallel agents), fall back to DB
+    let scope: string | null = null;
+    const pendingMarker = path.join(sessionDir, `.pending-scope-${bareAgentType}`);
+    try {
+      if (fs.existsSync(pendingMarker)) {
+        scope = fs.readFileSync(pendingMarker, "utf-8").trim();
+        fs.unlinkSync(pendingMarker);
+      }
+    } catch {}
+    if (!scope) scope = findAgentScope(db, bareAgentType);
+    if (scope) {
+
+      // Create pipeline from verification: steps (idempotent — no-op if already exists)
+      const agentMdPath = findAgentMd(bareAgentType, process.cwd(), HOME);
+      if (agentMdPath) {
+        const mdContent = fs.readFileSync(agentMdPath, "utf-8");
+        const steps = parseVerification(mdContent);
+        if (steps) {
+          engine.createPipeline(db, scope, bareAgentType, steps);
+          msg.notify(sessionDir, "⚡", `pipeline: Initialized ${steps.length} step(s) for scope="${scope}": ${steps.map(s => s.type).join(" → ")}.`);
+
+          // Langfuse: record pipeline creation as a trace span
+          const { langfuse, enabled } = tracing.init();
+          const trace = tracing.getOrCreateTrace(langfuse, enabled, db, scope, sessionId);
+          trace.span({ name: "pipeline-created", input: { scope, sourceAgent: bareAgentType, stepTypes: steps.map(s => s.type) } }).end();
+          tracing.flush(langfuse, enabled);
+        }
+      }
+
+      // Role-based context enrichment
+      const role = engine.resolveRole(db, scope, bareAgentType);
+
+      if (role === "verifier") {
+        // Gate agent: inject source artifact path + round info
+        const activeStep = getActiveStep(db, scope);
+        if (activeStep) {
+          const state = getPipelineState(db, scope);
+          const sourceAgent = state ? state.source_agent : "unknown";
+          // After fixer runs, reviewer reads fixer's output (latest version)
+          let sourceArtifact = `${sessionDir}/${scope}/${sourceAgent}.md`;
+          if (activeStep.fixer && activeStep.round > 0) {
+            const fixerArtifact = `${sessionDir}/${scope}/${activeStep.fixer}.md`;
+            if (fs.existsSync(fixerArtifact)) {
+              sourceArtifact = fixerArtifact;
+            }
+          }
+          pipelineContext =
+            `role=gate\n` +
+            `source_agent=${sourceAgent}\n` +
+            `source_artifact=${sourceArtifact}\n` +
+            `gate_round=${activeStep.round + 1}/${activeStep.max_rounds}\n`;
+        }
+      } else if (role === "fixer") {
+        // Fixer: inject source artifact + gate agent info
+        const fixStep = getStepByStatus(db, scope, "fix");
+        if (fixStep) {
+          const state = getPipelineState(db, scope);
+          const sourceAgent = state ? state.source_agent : "unknown";
+          const sourceArtifact = `${sessionDir}/${scope}/${sourceAgent}.md`;
+          pipelineContext =
+            `role=fixer\n` +
+            `source_agent=${sourceAgent}\n` +
+            `source_artifact=${sourceArtifact}\n` +
+            `gate_agent=${fixStep.agent}\n` +
+            `gate_round=${fixStep.round + 1}/${fixStep.max_rounds}\n`;
+        }
+      }
+      // Verification file exists → inject it (file existence IS the signal)
+      try {
+        const verificationFile = path.join(sessionDir, scope, `${bareAgentType}-verification.md`);
+        if (fs.existsSync(verificationFile)) {
+          const findings = fs.readFileSync(verificationFile, "utf-8");
+          pipelineContext +=
+            `artifact=${sessionDir}/${scope}/${bareAgentType}.md\n` +
+            `\nReviewer findings (address ALL issues before resubmitting):\n${findings}\n`;
+        }
+      } catch {}
+      // source (first run) / ungated → no context injection (semantics first)
+    }
+  } finally {
+    db.close();
+  }
+
+  // Only inject if there's role context to provide (verifier/fixer)
+  if (!pipelineContext) process.exit(0);
+
+  const context =
+    `<agent_gate importance="critical">\n` +
+    pipelineContext +
+    `</agent_gate>`;
+
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "SubagentStart",
+      additionalContext: context
+    }
+  }));
+  process.exit(0);
+} catch {
+  process.exit(0);
+}
+
+export {};

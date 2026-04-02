@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+"use strict";
 /**
  * ClaudeGates v2 — PreToolUse:ExitPlanMode gate.
  *
@@ -14,72 +15,69 @@
  *
  * Fail-open.
  */
-
-const fs = require("fs");
-const path = require("path");
-const { getDb, getAttempts, incrAttempts, resetAttempts } = require("./claude-gates-db.js");
-const { getSessionDir } = require("./pipeline-shared.js");
-
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
+const claude_gates_db_1 = require("./claude-gates-db");
+const pipeline_shared_1 = require("./pipeline-shared");
 const TRIVIAL_LINE_LIMIT = 20;
 const MAX_ATTEMPTS = 3;
-
 try {
-  const data = JSON.parse(fs.readFileSync(0, "utf-8"));
-
-  const sessionId = data.session_id || "";
-  if (!sessionId) process.exit(0);
-
-  const HOME = process.env.USERPROFILE || process.env.HOME || "";
-  const sessionDir = getSessionDir(sessionId);
-  const plansDir = path.join(HOME, ".claude", "plans");
-
-  // ── Check for gater verdict (SQLite) ──
-  const db = getDb(sessionDir);
-  let gaterVerified = false;
-
-  try {
-    const row = db.prepare(
-      "SELECT 1 FROM agents WHERE agent = 'gater' AND verdict IN ('PASS','CONVERGED') LIMIT 1"
-    ).get();
-    gaterVerified = !!row;
-  } catch {}
-  db.close();
-
-  if (gaterVerified) process.exit(0); // verified — allow
-
-  // ── Trivial plan bypass ──
-  let planFiles;
-  try {
-    planFiles = fs.readdirSync(plansDir)
-      .filter(f => f.endsWith(".md") && !/-agent-/.test(f))
-      .map(f => ({ name: f, mtime: fs.statSync(path.join(plansDir, f)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime);
-  } catch {
-    process.exit(0); // no plans dir — fail-open
-  }
-
-  if (planFiles.length === 0) process.exit(0); // no plans — allow
-
-  const planPath = path.join(plansDir, planFiles[0].name);
-  const lines = fs.readFileSync(planPath, "utf-8").split("\n").length;
-  if (lines <= TRIVIAL_LINE_LIMIT) process.exit(0); // trivial plan — allow
-
-  // ── Attempt tracking — auto-allow after MAX_ATTEMPTS ──
-  const db2 = getDb(sessionDir);
-  incrAttempts(db2, "_system", "plan-gate");
-  const attempts = getAttempts(db2, "_system", "plan-gate");
-  if (attempts >= MAX_ATTEMPTS) {
-    resetAttempts(db2, "_system", "plan-gate");
+    const data = JSON.parse(fs_1.default.readFileSync(0, "utf-8"));
+    const sessionId = data.session_id || "";
+    if (!sessionId)
+        process.exit(0);
+    const HOME = process.env.USERPROFILE || process.env.HOME || "";
+    const sessionDir = (0, pipeline_shared_1.getSessionDir)(sessionId);
+    const plansDir = path_1.default.join(HOME, ".claude", "plans");
+    // ── Check for gater verdict (SQLite) ──
+    const db = (0, claude_gates_db_1.getDb)(sessionDir);
+    let gaterVerified = false;
+    try {
+        const row = db.prepare("SELECT 1 FROM agents WHERE agent = 'gater' AND verdict IN ('PASS','CONVERGED') LIMIT 1").get();
+        gaterVerified = !!row;
+    }
+    catch { }
+    db.close();
+    if (gaterVerified)
+        process.exit(0); // verified — allow
+    // ── Trivial plan bypass ──
+    let planFiles;
+    try {
+        planFiles = fs_1.default.readdirSync(plansDir)
+            .filter(f => f.endsWith(".md") && !/-agent-/.test(f))
+            .map(f => ({ name: f, mtime: fs_1.default.statSync(path_1.default.join(plansDir, f)).mtimeMs }))
+            .sort((a, b) => b.mtime - a.mtime);
+    }
+    catch {
+        process.exit(0); // no plans dir — fail-open
+    }
+    if (planFiles.length === 0)
+        process.exit(0); // no plans — allow
+    const planPath = path_1.default.join(plansDir, planFiles[0].name);
+    const lines = fs_1.default.readFileSync(planPath, "utf-8").split("\n").length;
+    if (lines <= TRIVIAL_LINE_LIMIT)
+        process.exit(0); // trivial plan — allow
+    // ── Attempt tracking — auto-allow after MAX_ATTEMPTS ──
+    const db2 = (0, claude_gates_db_1.getDb)(sessionDir);
+    (0, claude_gates_db_1.incrAttempts)(db2, "_system", "plan-gate");
+    const attempts = (0, claude_gates_db_1.getAttempts)(db2, "_system", "plan-gate");
+    if (attempts >= MAX_ATTEMPTS) {
+        (0, claude_gates_db_1.resetAttempts)(db2, "_system", "plan-gate");
+        db2.close();
+        process.stderr.write(`[ClaudeGates] ⚠️ Safety valve activated.\n`);
+        process.exit(0);
+    }
     db2.close();
-    process.stderr.write(`[ClaudeGates] ⚠️ Safety valve activated.\n`);
+    // ── Block ──
+    const reason = `[ClaudeGates] 🔐 "${planFiles[0].name}" (${lines} lines) unverified. Spawn claude-gates:gater with scope=verify-plan.`;
+    process.stdout.write(JSON.stringify({ decision: "block", reason }));
     process.exit(0);
-  }
-  db2.close();
-
-  // ── Block ──
-  const reason = `[ClaudeGates] 🔐 "${planFiles[0].name}" (${lines} lines) unverified. Spawn claude-gates:gater with scope=verify-plan.`;
-  process.stdout.write(JSON.stringify({ decision: "block", reason }));
-  process.exit(0);
-} catch {
-  process.exit(0); // fail-open
 }
+catch {
+    process.exit(0); // fail-open
+}
+//# sourceMappingURL=plan-gate.js.map

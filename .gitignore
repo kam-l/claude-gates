@@ -1,5 +1,9 @@
 node_modules/
 package-lock.json
+scripts/*.d.ts
+scripts/*.d.ts.map
+scripts/*.js.map
+scripts-backup/
 .artifacts/
 .sessions/
 exported-sessions/

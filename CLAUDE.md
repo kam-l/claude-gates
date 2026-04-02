@@ -15,6 +15,10 @@ node scripts/pipeline-test.js         # 93 unit/integration tests
 node scripts/test-pipeline-e2e.js     # 30 end-to-end tests
 ```
 
+- TypeScript source in `src/`, compiled to `scripts/` — compiled JS tracked in git (consumers need no build step)
+- `tsconfig.json`: `strict: true`, CJS (`module: commonjs`), `outDir: scripts`, `rootDir: src`
+- Build: `npm run build` (tsc). Verify interop: no `exports.default` in compiled output.
+
 ## Frontmatter Quick Reference
 
 ```yaml

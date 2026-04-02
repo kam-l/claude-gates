@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+"use strict";
 /**
  * Langfuse observability tracing — opt-in, fail-open, zero-impact when disabled.
  *
@@ -21,26 +22,32 @@
  * Every public function is wrapped in try-catch. Tracing failure NEVER blocks
  * pipeline operations. If Langfuse is unreachable, spans are silently dropped.
  */
-
-const crypto = require("crypto");
-
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.NOOP = void 0;
+exports.init = init;
+exports.getOrCreateTrace = getOrCreateTrace;
+exports.flush = flush;
+const crypto_1 = __importDefault(require("crypto"));
 // ── NOOP proxy ──────────────────────────────────────────────────────
 // When tracing is disabled, all calls go here and do nothing.
 // Supports both method calls (trace.span({...}).end()) and property reads (trace.id).
 //
 // .NET analogy: like NullLogger<T> — implements the interface, does nothing.
 const NOOP = new Proxy(Object.create(null), {
-  get(_target, prop) {
-    // Symbol properties (used by Node internals like util.inspect) → undefined
-    if (typeof prop === "symbol") return undefined;
-    // Return a function that either returns null (property-like: trace.id)
-    // or returns NOOP (method-like: trace.span({...}) for chaining)
-    return (...args) => (args.length === 0 ? null : NOOP);
-  }
+    get(_target, prop) {
+        // Symbol properties (used by Node internals like util.inspect) → undefined
+        if (typeof prop === "symbol")
+            return undefined;
+        // Return a function that either returns null (property-like: trace.id)
+        // or returns NOOP (method-like: trace.span({...}) for chaining)
+        return (...args) => (args.length === 0 ? null : NOOP);
+    }
 });
-
+exports.NOOP = NOOP;
 // ── Public API ──────────────────────────────────────────────────────
-
 /**
  * Initialize Langfuse client. Returns { langfuse, enabled }.
  *
@@ -48,33 +55,31 @@ const NOOP = new Proxy(Object.create(null), {
  * - If `langfuse` npm package is not installed → same NOOP fallback
  * - The require() is lazy (inside this function, not top-level) so the
  *   module loads fine even without the langfuse package installed.
- *
- * @returns {{ langfuse: object, enabled: boolean }}
  */
 function init() {
-  if (!process.env.LANGFUSE_PUBLIC_KEY || !process.env.LANGFUSE_SECRET_KEY) {
-    return { langfuse: NOOP, enabled: false };
-  }
-  try {
-    // Lazy require — only loads langfuse when tracing is actually enabled
-    const { Langfuse } = require("langfuse");
-    const langfuse = new Langfuse({
-      publicKey: process.env.LANGFUSE_PUBLIC_KEY,
-      secretKey: process.env.LANGFUSE_SECRET_KEY,
-      baseUrl: process.env.LANGFUSE_BASE_URL || undefined,
-      // Short-lived process settings:
-      // flushAt: 1  → send each event immediately (no batching)
-      // flushInterval: 0 → no periodic timer (we flush manually)
-      flushAt: 1,
-      flushInterval: 0,
-    });
-    return { langfuse, enabled: true };
-  } catch {
-    // langfuse package not installed or failed to load → silent no-op
-    return { langfuse: NOOP, enabled: false };
-  }
+    if (!process.env.LANGFUSE_PUBLIC_KEY || !process.env.LANGFUSE_SECRET_KEY) {
+        return { langfuse: NOOP, enabled: false };
+    }
+    try {
+        // Lazy require — only loads langfuse when tracing is actually enabled
+        const { Langfuse } = require("langfuse");
+        const langfuse = new Langfuse({
+            publicKey: process.env.LANGFUSE_PUBLIC_KEY,
+            secretKey: process.env.LANGFUSE_SECRET_KEY,
+            baseUrl: process.env.LANGFUSE_BASE_URL || undefined,
+            // Short-lived process settings:
+            // flushAt: 1  → send each event immediately (no batching)
+            // flushInterval: 0 → no periodic timer (we flush manually)
+            flushAt: 1,
+            flushInterval: 0,
+        });
+        return { langfuse, enabled: true };
+    }
+    catch {
+        // langfuse package not installed or failed to load → silent no-op
+        return { langfuse: NOOP, enabled: false };
+    }
 }
-
 /**
  * Get or create a Langfuse trace for a pipeline scope.
  *
@@ -83,43 +88,35 @@ function init() {
  *
  * The trace_id is the cross-process correlation key — like a W3C traceparent
  * header, but stored in SQLite instead of HTTP headers.
- *
- * @param {object} langfuse - Langfuse client (or NOOP)
- * @param {boolean} enabled - Whether tracing is enabled
- * @param {object} db - SQLite database (better-sqlite3)
- * @param {string} scope - Pipeline scope name
- * @param {string} sessionId - Claude Code session ID
- * @returns {object} Langfuse trace object (or NOOP)
  */
 function getOrCreateTrace(langfuse, enabled, db, scope, sessionId) {
-  if (!enabled) return NOOP;
-  try {
-    // Read existing trace_id from pipeline_state
-    const row = db.prepare("SELECT trace_id FROM pipeline_state WHERE scope = ?").get(scope);
-    if (!row) return NOOP; // pipeline_state row doesn't exist yet
-
-    let traceId = row.trace_id;
-
-    // First time: generate and store trace_id
-    if (!traceId) {
-      traceId = crypto.randomUUID();
-      db.prepare("UPDATE pipeline_state SET trace_id = ? WHERE scope = ?").run(traceId, scope);
+    if (!enabled)
+        return NOOP;
+    try {
+        // Read existing trace_id from pipeline_state
+        const row = db.prepare("SELECT trace_id FROM pipeline_state WHERE scope = ?").get(scope);
+        if (!row)
+            return NOOP; // pipeline_state row doesn't exist yet
+        let traceId = row.trace_id;
+        // First time: generate and store trace_id
+        if (!traceId) {
+            traceId = crypto_1.default.randomUUID();
+            db.prepare("UPDATE pipeline_state SET trace_id = ? WHERE scope = ?").run(traceId, scope);
+        }
+        // Create (or reuse) the Langfuse trace with this ID
+        // Langfuse deduplicates by trace ID — multiple processes adding spans
+        // to the same ID all show up in one trace timeline.
+        return langfuse.trace({
+            id: traceId,
+            name: `pipeline:${scope}`,
+            sessionId: sessionId,
+            metadata: { scope },
+        });
     }
-
-    // Create (or reuse) the Langfuse trace with this ID
-    // Langfuse deduplicates by trace ID — multiple processes adding spans
-    // to the same ID all show up in one trace timeline.
-    return langfuse.trace({
-      id: traceId,
-      name: `pipeline:${scope}`,
-      sessionId: sessionId,
-      metadata: { scope },
-    });
-  } catch {
-    return NOOP;
-  }
+    catch {
+        return NOOP;
+    }
 }
-
 /**
  * Fire-and-forget flush. Schedules the HTTP send but does NOT await it.
  *
@@ -129,19 +126,17 @@ function getOrCreateTrace(langfuse, enabled, db, scope, sessionId) {
  *
  * .NET analogy: like calling TracerProvider.ForceFlush() with a short timeout,
  * except we don't block the thread at all.
- *
- * @param {object} langfuse - Langfuse client (or NOOP)
- * @param {boolean} enabled - Whether tracing is enabled
  */
 function flush(langfuse, enabled) {
-  if (!enabled) return;
-  try {
-    // shutdownAsync() returns a Promise — we deliberately don't await it.
-    // The .catch() prevents unhandled rejection warnings.
-    langfuse.shutdownAsync().catch(() => {});
-  } catch {
-    // fail-open: flush failure is never an error
-  }
+    if (!enabled)
+        return;
+    try {
+        // shutdownAsync() returns a Promise — we deliberately don't await it.
+        // The .catch() prevents unhandled rejection warnings.
+        langfuse.shutdownAsync().catch(() => { });
+    }
+    catch {
+        // fail-open: flush failure is never an error
+    }
 }
-
-module.exports = { init, getOrCreateTrace, flush, NOOP };
+//# sourceMappingURL=tracing.js.map

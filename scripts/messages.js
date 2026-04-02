@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+"use strict";
 /**
  * Unified messaging for all claude-gates hooks.
  *
@@ -13,54 +14,58 @@
  * SubagentStop cannot use systemMessage (issue #16289). Use notify() there;
  * pipeline-block.js reads the file on next PreToolUse and surfaces via systemMessage.
  */
-
-const fs = require("fs");
-const path = require("path");
-
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.fmt = fmt;
+exports.block = block;
+exports.info = info;
+exports.notify = notify;
+exports.drainNotifications = drainNotifications;
+exports.log = log;
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
 const PREFIX = "[ClaudeGates]";
-
 function fmt(emoji, text) {
-  return `${PREFIX} ${emoji} ${text}`;
+    return `${PREFIX} ${emoji} ${text}`;
 }
-
 /** Block a tool call. reason is injected into Claude's context. */
 function block(emoji, text) {
-  const msg = fmt(emoji, text);
-  process.stdout.write(JSON.stringify({ decision: "block", reason: msg }));
+    const msg = fmt(emoji, text);
+    process.stdout.write(JSON.stringify({ decision: "block", reason: msg }));
 }
-
 /** Show info to user via systemMessage. Works on PreToolUse/PostToolUse only. */
 function info(emoji, text) {
-  const msg = fmt(emoji, text);
-  process.stdout.write(JSON.stringify({ systemMessage: msg }));
+    const msg = fmt(emoji, text);
+    process.stdout.write(JSON.stringify({ systemMessage: msg }));
 }
-
 /** Queue a notification for the user. pipeline-block.js surfaces it on next PreToolUse.
  *  Use this from SubagentStop/SubagentStart where systemMessage is broken. */
 function notify(sessionDir, emoji, text) {
-  const msg = fmt(emoji, text);
-  const filePath = path.join(sessionDir, ".pipeline-notifications");
-  try {
-    fs.appendFileSync(filePath, msg + "\n", "utf-8");
-  } catch {} // non-fatal
+    const msg = fmt(emoji, text);
+    const filePath = path_1.default.join(sessionDir, ".pipeline-notifications");
+    try {
+        fs_1.default.appendFileSync(filePath, msg + "\n", "utf-8");
+    }
+    catch { } // non-fatal
 }
-
 /** Read and clear queued notifications. Returns string or null. */
 function drainNotifications(sessionDir) {
-  const filePath = path.join(sessionDir, ".pipeline-notifications");
-  try {
-    if (!fs.existsSync(filePath)) return null;
-    const content = fs.readFileSync(filePath, "utf-8").trim();
-    fs.unlinkSync(filePath);
-    return content || null;
-  } catch {
-    return null;
-  }
+    const filePath = path_1.default.join(sessionDir, ".pipeline-notifications");
+    try {
+        if (!fs_1.default.existsSync(filePath))
+            return null;
+        const content = fs_1.default.readFileSync(filePath, "utf-8").trim();
+        fs_1.default.unlinkSync(filePath);
+        return content || null;
+    }
+    catch {
+        return null;
+    }
 }
-
 /** Debug log to stderr. Invisible to user. Same template for grep-ability. */
 function log(emoji, text) {
-  process.stderr.write(fmt(emoji, text) + "\n");
+    process.stderr.write(fmt(emoji, text) + "\n");
 }
-
-module.exports = { fmt, block, info, notify, drainNotifications, log };
+//# sourceMappingURL=messages.js.map

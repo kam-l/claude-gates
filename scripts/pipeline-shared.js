@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+"use strict";
 /**
  * Pipeline v3 — shared module.
  *
@@ -6,7 +7,7 @@
  *
  * Exports:
  *   extractFrontmatter(mdContent)     → string | null
- *   parseVerification(mdContent)      → Step[] | null
+ *   parseVerification(mdContent)      → VerificationStep[] | null
  *   parseConditions(mdContent)        → string | null
  *   requiresScope(mdContent)          → boolean
  *   findAgentMd(agentType, projectRoot, home) → string | null
@@ -19,21 +20,30 @@
  *   { type: 'REVIEW', agent: string, maxRounds: number }
  *   { type: 'REVIEW_WITH_FIXER', agent: string, maxRounds: number, fixer: string }
  */
-
-const fs = require("fs");
-const path = require("path");
-
-const VERDICT_RE = /^Result:\s*(PASS|FAIL|REVISE|CONVERGED)/mi;
-
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.VERDICT_RE = void 0;
+exports.extractFrontmatter = extractFrontmatter;
+exports.parseVerification = parseVerification;
+exports.parseConditions = parseConditions;
+exports.requiresScope = requiresScope;
+exports.findAgentMd = findAgentMd;
+exports.getSessionDir = getSessionDir;
+exports.agentRunningMarker = agentRunningMarker;
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
+const VERDICT_RE = /^(?:\*{0,2})(?:Result|Verdict):?\s*(PASS|FAIL|REVISE|CONVERGED)/mi;
+exports.VERDICT_RE = VERDICT_RE;
 /**
  * Extract frontmatter block from markdown content.
  * Returns the raw YAML string between --- fences, or null.
  */
 function extractFrontmatter(mdContent) {
-  const match = mdContent.match(/^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/);
-  return match ? match[1] : null;
+    const match = mdContent.match(/^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/);
+    return match ? match[1] : null;
 }
-
 /**
  * Parse unified verification: field from agent YAML frontmatter.
  *
@@ -44,33 +54,32 @@ function extractFrontmatter(mdContent) {
  *     - [reviewer, 3]                              # REVIEW
  *     - [reviewer, 3, fixer]                       # REVIEW_WITH_FIXER
  *
- * Returns Step[] or null.
+ * Returns VerificationStep[] or null.
  */
 function parseVerification(mdContent) {
-  const fm = extractFrontmatter(mdContent);
-  if (!fm) return null;
-
-  // Match the verification: block (array of items)
-  const blockMatch = fm.match(/^verification:\s*\r?\n((?:\s+-\s*.*\r?\n?)+)/m);
-  if (!blockMatch) return null;
-
-  const steps = [];
-  for (const line of blockMatch[1].split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || !trimmed.startsWith("-")) continue;
-
-    // Extract the array content: - [...]
-    const arrMatch = trimmed.match(/^-\s*\[(.+)\]\s*$/);
-    if (!arrMatch) continue;
-
-    const inner = arrMatch[1].trim();
-    const step = parseStepArray(inner);
-    if (step) steps.push(step);
-  }
-
-  return steps.length > 0 ? steps : null;
+    const fm = extractFrontmatter(mdContent);
+    if (!fm)
+        return null;
+    // Match the verification: block (array of items)
+    const blockMatch = fm.match(/^verification:\s*\r?\n((?:\s+-\s*.*\r?\n?)+)/m);
+    if (!blockMatch)
+        return null;
+    const steps = [];
+    for (const line of blockMatch[1].split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("-"))
+            continue;
+        // Extract the array content: - [...]
+        const arrMatch = trimmed.match(/^-\s*\[(.+)\]\s*$/);
+        if (!arrMatch)
+            continue;
+        const inner = arrMatch[1].trim();
+        const step = parseStepArray(inner);
+        if (step)
+            steps.push(step);
+    }
+    return steps.length > 0 ? steps : null;
 }
-
 /**
  * Parse inner content of a step array.
  * Determines step type from first element:
@@ -79,152 +88,151 @@ function parseVerification(mdContent) {
  *   - Agent name → REVIEW or REVIEW_WITH_FIXER
  */
 function parseStepArray(inner) {
-  // SEMANTIC: ["prompt literal"] or ['prompt literal']
-  const semanticMatch = inner.match(/^["'](.+)["']$/);
-  if (semanticMatch) {
-    return { type: "SEMANTIC", prompt: semanticMatch[1] };
-  }
-
-  // Split by comma, trim each part
-  const parts = splitCSV(inner);
-  if (parts.length === 0) return null;
-
-  const first = parts[0];
-
-  // COMMAND: /command, Tool1, Tool2, ...
-  if (first.startsWith("/")) {
-    return {
-      type: "COMMAND",
-      command: first,
-      allowedTools: parts.slice(1)
-    };
-  }
-
-  // REVIEW or REVIEW_WITH_FIXER: agent, maxRounds[, fixer]
-  const agentName = unquote(first);
-  if (!agentName || !/^[A-Za-z0-9_-]+$/.test(agentName)) return null;
-
-  const maxRounds = parts.length >= 2 ? parseInt(parts[1], 10) : 3;
-  if (isNaN(maxRounds)) return null;
-
-  if (parts.length >= 3) {
-    const fixer = unquote(parts[2]);
-    if (fixer && /^[A-Za-z0-9_-]+$/.test(fixer)) {
-      return { type: "REVIEW_WITH_FIXER", agent: agentName, maxRounds, fixer };
+    // SEMANTIC: ["prompt literal"] or ['prompt literal']
+    const semanticMatch = inner.match(/^["'](.+)["']$/);
+    if (semanticMatch) {
+        return { type: "SEMANTIC", prompt: semanticMatch[1] };
     }
-  }
-
-  return { type: "REVIEW", agent: agentName, maxRounds };
+    // Split by comma, trim each part
+    const parts = splitCSV(inner);
+    if (parts.length === 0)
+        return null;
+    const first = parts[0];
+    // COMMAND: /command, Tool1, Tool2, ...
+    if (first.startsWith("/")) {
+        return {
+            type: "COMMAND",
+            command: first,
+            allowedTools: parts.slice(1)
+        };
+    }
+    // REVIEW or REVIEW_WITH_FIXER: agent, maxRounds[, fixer]
+    const agentName = unquote(first);
+    if (!agentName || !/^[A-Za-z0-9_-]+$/.test(agentName))
+        return null;
+    const maxRounds = parts.length >= 2 ? parseInt(parts[1], 10) : 3;
+    if (isNaN(maxRounds))
+        return null;
+    if (parts.length >= 3) {
+        const fixer = unquote(parts[2]);
+        if (fixer && /^[A-Za-z0-9_-]+$/.test(fixer)) {
+            return { type: "REVIEW_WITH_FIXER", agent: agentName, maxRounds, fixer };
+        }
+    }
+    return { type: "REVIEW", agent: agentName, maxRounds };
 }
-
 /**
  * Split CSV respecting quoted strings.
  * "a, b, c" → ["a", "b", "c"]
  * Does not handle nested quotes — step arrays are simple.
  */
 function splitCSV(str) {
-  const parts = [];
-  let current = "";
-  let inQuote = false;
-  let quoteChar = "";
-
-  for (let i = 0; i < str.length; i++) {
-    const ch = str[i];
-    if (inQuote) {
-      if (ch === quoteChar) {
-        inQuote = false;
-      } else {
-        current += ch;
-      }
-    } else if (ch === '"' || ch === "'") {
-      inQuote = true;
-      quoteChar = ch;
-    } else if (ch === ",") {
-      parts.push(current.trim());
-      current = "";
-    } else {
-      current += ch;
+    const parts = [];
+    let current = "";
+    let inQuote = false;
+    let quoteChar = "";
+    for (let i = 0; i < str.length; i++) {
+        const ch = str[i];
+        if (inQuote) {
+            if (ch === quoteChar) {
+                inQuote = false;
+            }
+            else {
+                current += ch;
+            }
+        }
+        else if (ch === '"' || ch === "'") {
+            inQuote = true;
+            quoteChar = ch;
+        }
+        else if (ch === ",") {
+            parts.push(current.trim());
+            current = "";
+        }
+        else {
+            current += ch;
+        }
     }
-  }
-  if (current.trim()) parts.push(current.trim());
-  return parts;
+    if (current.trim())
+        parts.push(current.trim());
+    return parts;
 }
-
 /** Remove surrounding quotes from a string. */
 function unquote(s) {
-  if (!s) return s;
-  const t = s.trim();
-  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
-    return t.slice(1, -1);
-  }
-  return t;
+    if (!s)
+        return s;
+    const t = s.trim();
+    if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
+        return t.slice(1, -1);
+    }
+    return t;
 }
-
 /**
  * Parse conditions: prompt from agent YAML frontmatter.
  * Semantic pre-check run BEFORE the agent spawns.
  * Returns the prompt string or null.
  */
 function parseConditions(mdContent) {
-  const fm = extractFrontmatter(mdContent);
-  if (!fm) return null;
-  const cMatch = fm.match(/^conditions:\s*\|\s*\r?\n((?:[ ]{2,}.*\r?\n?)+)/m);
-  if (cMatch) {
-    return cMatch[1]
-      .split(/\r?\n/)
-      .map(line => line.replace(/^ {2}/, ""))
-      .join("\n")
-      .trim();
-  }
-  return null;
+    const fm = extractFrontmatter(mdContent);
+    if (!fm)
+        return null;
+    const cMatch = fm.match(/^conditions:\s*\|\s*\r?\n((?:[ ]{2,}.*\r?\n?)+)/m);
+    if (cMatch) {
+        return cMatch[1]
+            .split(/\r?\n/)
+            .map((line) => line.replace(/^ {2}/, ""))
+            .join("\n")
+            .trim();
+    }
+    return null;
 }
-
 /**
  * Check whether agent definition requires a scope for pipeline.
  * Returns true if frontmatter contains verification: (array form) or conditions:.
  */
 function requiresScope(mdContent) {
-  const fm = extractFrontmatter(mdContent);
-  if (!fm) return false;
-  // verification: followed by newline+indent (array form, not block scalar)
-  if (/^verification:\s*\r?\n\s+-/m.test(fm)) return true;
-  if (/^conditions\s*:/m.test(fm)) return true;
-  return false;
+    const fm = extractFrontmatter(mdContent);
+    if (!fm)
+        return false;
+    // verification: followed by newline+indent (array form, not block scalar)
+    if (/^verification:\s*\r?\n\s+-/m.test(fm))
+        return true;
+    if (/^conditions\s*:/m.test(fm))
+        return true;
+    return false;
 }
-
 /**
  * Find agent .md: project-level first, then global.
  * Returns absolute path or null.
  */
 function findAgentMd(agentType, projectRoot, home) {
-  if (projectRoot) {
-    const projectPath = path.join(projectRoot, ".claude", "agents", `${agentType}.md`);
-    if (fs.existsSync(projectPath)) return projectPath;
-  }
-  if (home) {
-    const globalPath = path.join(home, ".claude", "agents", `${agentType}.md`);
-    if (fs.existsSync(globalPath)) return globalPath;
-  }
-  return null;
+    if (projectRoot) {
+        const projectPath = path_1.default.join(projectRoot, ".claude", "agents", `${agentType}.md`);
+        if (fs_1.default.existsSync(projectPath))
+            return projectPath;
+    }
+    if (home) {
+        const globalPath = path_1.default.join(home, ".claude", "agents", `${agentType}.md`);
+        if (fs_1.default.existsSync(globalPath))
+            return globalPath;
+    }
+    return null;
 }
-
 /**
  * Session directory — project-local .sessions/{short-id}/, avoids ~/.claude/ permission prompts.
  * Truncates UUID to first 8 hex chars (~4B values, collision-safe for per-project use).
  * Forward-slash-normalized for cross-platform output_filepath consistency.
  */
 function getSessionDir(sessionId) {
-  const shortId = sessionId.replace(/-/g, "").slice(0, 8);
-  return path.join(process.cwd(), ".sessions", shortId).replace(/\\/g, "/");
+    const shortId = sessionId.replace(/-/g, "").slice(0, 8);
+    return path_1.default.join(process.cwd(), ".sessions", shortId).replace(/\\/g, "/");
 }
-
 /**
  * Agent-running marker — tracks whether a spawned agent is still executing.
  * Written by conditions.js (PreToolUse:Agent), cleared by verification.js (SubagentStop).
  * Checked by pipeline-block.js to avoid blocking while agents run.
  */
 function agentRunningMarker(sessionDir, scope) {
-  return path.join(sessionDir, `.running-${scope}`).replace(/\\/g, "/");
+    return path_1.default.join(sessionDir, `.running-${scope}`).replace(/\\/g, "/");
 }
-
-module.exports = { extractFrontmatter, parseVerification, parseConditions, requiresScope, findAgentMd, getSessionDir, agentRunningMarker, VERDICT_RE };
+//# sourceMappingURL=pipeline-shared.js.map

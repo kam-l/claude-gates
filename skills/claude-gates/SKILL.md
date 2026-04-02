@@ -68,5 +68,5 @@ Failed pipeline recovery: delete rows via `deletePipeline(db, scope)`, re-spawn 
 | "has verification but no scope" | Add `scope=<name>` to spawn prompt |
 | "expects agent X, not Y" | Pipeline step requires specific agent — spawn the named one |
 | "COMMAND step active" | Run the command, then `/pass_or_revise` |
-| Pipeline stuck | Run `/claude-gates:heal` with the session ID |
+| Pipeline stuck | Run `/claude-gates:unblock` with the session ID |
 | Debug leftovers at stop | Remove flagged patterns or stop again (nudge mode) |
