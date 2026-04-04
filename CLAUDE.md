@@ -11,13 +11,15 @@ Declarative pipeline gates — `verification:` unified array format in agent fro
 ## Build / Test
 
 ```bash
-node scripts/PipelineTest.js           # 108 unit/integration tests
+node scripts/PipelineTest.js           # 110 unit/integration tests
 node scripts/PipelineE2eTest.js       # 28 end-to-end tests
 ```
 
 - TypeScript source in `src/`, compiled to `scripts/` — compiled JS tracked in git (consumers need no build step)
 - `tsconfig.json`: `strict: true`, CJS (`module: commonjs`), `outDir: scripts`, `rootDir: src`
 - Build: `npm run build` (tsc). Verify interop: no `exports.default` in compiled output.
+- Source files: PascalCase filenames (`PipelineEngine.ts`, `McpServer.ts`). No kebab-case in `src/`.
+- Formatting: Allman braces (`dprint`, `bracePosition: nextLine`). Run `npx dprint fmt` before committing.
 
 ## Frontmatter Quick Reference
 
@@ -43,6 +45,9 @@ conditions: |                         # Pre-spawn check (blocks on FAIL)
 - `better-sqlite3` is a hard dependency — installed via SessionStart hook.
 - Fail-open: every hook catches errors and exits 0.
 - **All hooks MUST exit 0.** Exit 2 causes Claude Code to ignore stdout JSON (including `systemMessage`). Use `Messaging.notify()` file side-channel for SubagentStop messages, not exit codes.
+- Use `StepStatus` enum constants in all production hooks and engine code — never raw strings ('pending', 'active', 'complete'). Tests may use strings.
+- `GateRepository.initSchema` owns only its own tables; shared tables (agents, pipeline_state etc.) belong to `PipelineRepository.initSchema`.
+- `Tracing` must use `PipelineRepository` methods for any DB writes — no raw SQL outside repository classes.
 
 ## Design Principles
 
@@ -62,16 +67,16 @@ src/
   FrontmatterParser.ts        # Static — extractFrontmatter, parseVerification, parseConditions
   Messaging.ts                # Static — block, info, notify, log
   Tracing.ts                  # Static — Langfuse + audit.jsonl
-  session-context.ts           # Hook: SessionStart — injects session context
-  pipeline-verification.ts    # Hook: SubagentStop — role dispatch + semantic checks
-  pipeline-block.ts           # Hook: PreToolUse — blocks tools while pipeline active
-  pipeline-conditions.ts      # Hook: PreToolUse:Agent — conditions + step enforcement
-  pipeline-injection.ts       # Hook: SubagentStart — pipeline creation + context enrichment
-  plan-gate.ts                # Hook: PreToolUse:ExitPlanMode — blocks unverified plans
-  plan-gate-clear.ts          # Hook: PostToolUse:ExitPlanMode — clears gater verdict
-  mcp-server.ts               # MCP: gate_verdict + gate_status tools
-  database.ts                 # Test helper — flat (db, scope, ...) API over PipelineRepository
-  state-machine.ts            # Test helper — flat (db, scope, ...) API over PipelineEngine
+  SessionContext.ts            # Hook: SessionStart — injects session context
+  PipelineVerification.ts     # Hook: SubagentStop — role dispatch + semantic checks
+  PipelineBlock.ts            # Hook: PreToolUse — blocks tools while pipeline active
+  PipelineConditions.ts       # Hook: PreToolUse:Agent — conditions + step enforcement
+  PipelineInjection.ts        # Hook: SubagentStart — context enrichment (pipeline creation deferred to SubagentStop)
+  PlanGate.ts                 # Hook: PreToolUse:ExitPlanMode — blocks unverified plans
+  PlanGateClear.ts            # Hook: PostToolUse:ExitPlanMode — clears gater verdict
+  McpServer.ts                # MCP: gate_verdict(verdict, check) + gate_status tools
+  Database.ts                 # Test helper — flat (db, scope, ...) API over PipelineRepository
+  StateMachine.ts             # Test helper — flat (db, scope, ...) API over PipelineEngine
 ```
 
 ## Session State
