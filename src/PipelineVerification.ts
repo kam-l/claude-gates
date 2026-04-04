@@ -340,6 +340,29 @@ function notifyVerify(sessionDir: string, reason: string,)
   Messaging.notify(sessionDir, "🔐", reason,);
 }
 
+/**
+ * Implicit source checker — lightweight heuristic validation.
+ * Returns null if OK, or a failure reason string.
+ * NOT a gater call — just basic structural checks.
+ */
+function implicitSourceCheck(content: string, artifactPath: string,): string | null
+{
+  if (!content || content.trim().length === 0)
+  {
+    return `Artifact is empty: ${path.basename(artifactPath,)}`;
+  }
+  if (content.trim().length < 50)
+  {
+    return `Artifact is trivially short (${content.trim().length} chars): ${path.basename(artifactPath,)}`;
+  }
+  // Must have some structure: heading (#), bullet (-/*/+), or numbered list
+  if (!/^[#\-*+\d]/m.test(content,))
+  {
+    return `Artifact lacks structure (no headings, bullets, or lists): ${path.basename(artifactPath,)}`;
+  }
+  return null;
+}
+
 // ── Handler (exported for hook-handler barrel + testing) ────────────
 
 export function onSubagentStop(data: any,): void
@@ -699,6 +722,20 @@ function handleSource(
       return;
     }
     // Fall through: CHECK step reactivated, run the check now
+  }
+
+  // ── Implicit source checker (lightweight heuristic, no gater call) ──
+  // Validates: non-empty, non-trivial (>50 chars), has some structure (heading or bullets).
+  const implicitCheckResult = implicitSourceCheck(artifactContent, artifactPath,);
+  if (implicitCheckResult)
+  {
+    Messaging.notify(sessionDir, "", `${agentType}: ${implicitCheckResult}`,);
+    Tracing.trace(sessionDir, "implicit-check.fail", scope, { agent: agentType, reason: implicitCheckResult, },);
+    recordVerdict(repo, scope, agentType, "FAIL",);
+    const failAction = pipelineEngine.step(scope, { role: "source", artifactVerdict: "FAIL", },);
+    logAction(sessionDir, failAction, scope,);
+    trace.span({ name: "implicit-check", input: { agent: agentType, }, output: { verdict: "FAIL", reason: implicitCheckResult, }, },).end();
+    return;
   }
 
   // Check if active step is CHECK — run semantic check with step's prompt

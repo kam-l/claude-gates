@@ -258,6 +258,24 @@ function gatherScopeContext(sessionDir, scope, agentType) {
 function notifyVerify(sessionDir, reason) {
     Messaging_1.Messaging.notify(sessionDir, "🔐", reason);
 }
+/**
+ * Implicit source checker — lightweight heuristic validation.
+ * Returns null if OK, or a failure reason string.
+ * NOT a gater call — just basic structural checks.
+ */
+function implicitSourceCheck(content, artifactPath) {
+    if (!content || content.trim().length === 0) {
+        return `Artifact is empty: ${path_1.default.basename(artifactPath)}`;
+    }
+    if (content.trim().length < 50) {
+        return `Artifact is trivially short (${content.trim().length} chars): ${path_1.default.basename(artifactPath)}`;
+    }
+    // Must have some structure: heading (#), bullet (-/*/+), or numbered list
+    if (!/^[#\-*+\d]/m.test(content)) {
+        return `Artifact lacks structure (no headings, bullets, or lists): ${path_1.default.basename(artifactPath)}`;
+    }
+    return null;
+}
 // ── Handler (exported for hook-handler barrel + testing) ────────────
 function onSubagentStop(data) {
     const isContinuation = !!data.stop_hook_active;
@@ -483,6 +501,18 @@ function handleSource(repo, pipelineEngine, scope, agentType, artifactPath, arti
             return;
         }
         // Fall through: CHECK step reactivated, run the check now
+    }
+    // ── Implicit source checker (lightweight heuristic, no gater call) ──
+    // Validates: non-empty, non-trivial (>50 chars), has some structure (heading or bullets).
+    const implicitCheckResult = implicitSourceCheck(artifactContent, artifactPath);
+    if (implicitCheckResult) {
+        Messaging_1.Messaging.notify(sessionDir, "", `${agentType}: ${implicitCheckResult}`);
+        Tracing_1.Tracing.trace(sessionDir, "implicit-check.fail", scope, { agent: agentType, reason: implicitCheckResult, });
+        recordVerdict(repo, scope, agentType, "FAIL");
+        const failAction = pipelineEngine.step(scope, { role: "source", artifactVerdict: "FAIL", });
+        logAction(sessionDir, failAction, scope);
+        trace.span({ name: "implicit-check", input: { agent: agentType, }, output: { verdict: "FAIL", reason: implicitCheckResult, }, }).end();
+        return;
     }
     // Check if active step is CHECK — run semantic check with step's prompt
     const activeStep = repo.getActiveStep(scope);

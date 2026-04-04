@@ -17,11 +17,6 @@
             "type": "command",
             "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/SessionContext.js",
             "timeout": 2000
-          },
-          {
-            "type": "command",
-            "command": "claude mcp add claude-gates -- node ${CLAUDE_PLUGIN_ROOT}/scripts/McpServer.js 2>/dev/null || true",
-            "timeout": 5000
           }
         ]
       }
