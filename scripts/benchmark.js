@@ -45,12 +45,12 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-const perf_hooks_1 = require("perf_hooks");
-const path_1 = __importDefault(require("path"));
 const fs_1 = __importDefault(require("fs"));
 const os_1 = __importDefault(require("os"));
-const crud = __importStar(require("./pipeline-db.js"));
-const engine = __importStar(require("./pipeline.js"));
+const path_1 = __importDefault(require("path"));
+const perf_hooks_1 = require("perf_hooks");
+const crud = __importStar(require("./Database.js"));
+const engine = __importStar(require("./StateMachine.js"));
 // ── Setup ────────────────────────────────────────────────────────────
 const tmpDir = fs_1.default.mkdtempSync(path_1.default.join(os_1.default.tmpdir(), "cg-bench-"));
 const db = crud.getDb(tmpDir);
@@ -58,11 +58,13 @@ const ITERATIONS = 1000;
 const PARALLEL_COUNT = 10;
 function bench(name, fn) {
     // Warmup
-    for (let i = 0; i < 10; i++)
+    for (let i = 0; i < 10; i++) {
         fn(i);
+    }
     const start = perf_hooks_1.performance.now();
-    for (let i = 0; i < ITERATIONS; i++)
+    for (let i = 0; i < ITERATIONS; i++) {
         fn(i);
+    }
     const elapsed = perf_hooks_1.performance.now() - start;
     return {
         name,
@@ -77,9 +79,9 @@ const results = [];
 results.push(bench("Pipeline creation (3 steps)", (i) => {
     const scope = `bench-create-${i}`;
     engine.createPipeline(db, scope, "worker", [
-        { type: "SEMANTIC", prompt: "Check quality" },
-        { type: "REVIEW", agent: "reviewer", maxRounds: 3 },
-        { type: "REVIEW_WITH_FIXER", agent: "reviewer", maxRounds: 3, fixer: "fixer" },
+        { type: "CHECK", prompt: "Check quality", },
+        { type: "VERIFY", agent: "reviewer", maxRounds: 3, },
+        { type: "VERIFY_W_FIXER", agent: "reviewer", maxRounds: 3, fixer: "fixer", },
     ]);
 }));
 // 2. State transitions (step() calls — PASS through 3-step pipeline)
@@ -87,9 +89,9 @@ results.push(bench("Pipeline creation (3 steps)", (i) => {
 for (let i = 0; i < ITERATIONS; i++) {
     const scope = `bench-step-${i}`;
     engine.createPipeline(db, scope, "worker", [
-        { type: "SEMANTIC", prompt: "Check" },
-        { type: "REVIEW", agent: "reviewer", maxRounds: 3 },
-        { type: "REVIEW_WITH_FIXER", agent: "reviewer", maxRounds: 2, fixer: "fixer" },
+        { type: "CHECK", prompt: "Check", },
+        { type: "VERIFY", agent: "reviewer", maxRounds: 3, },
+        { type: "VERIFY_W_FIXER", agent: "reviewer", maxRounds: 2, fixer: "fixer", },
     ]);
     // Activate first step
     crud.updateStepStatus(db, scope, 0, "active");
@@ -114,7 +116,7 @@ for (let run = 0; run < ITERATIONS; run++) {
     for (let p = 0; p < PARALLEL_COUNT; p++) {
         const scope = `bench-parallel-${run}-${p}`;
         engine.createPipeline(db, scope, "worker", [
-            { type: "SEMANTIC", prompt: "Check" },
+            { type: "CHECK", prompt: "Check", },
         ]);
         crud.updateStepStatus(db, scope, 0, "active");
         engine.step(db, scope, "PASS");
@@ -131,20 +133,20 @@ results.push({
 console.log(`\nclaude-gates benchmark — ${ITERATIONS} iterations each\n`);
 const nameWidth = 42;
 const colWidth = 14;
-const header = "Benchmark".padEnd(nameWidth) +
-    "Total (ms)".padStart(colWidth) +
-    "Per op (ms)".padStart(colWidth) +
-    "Ops/sec".padStart(colWidth);
+const header = "Benchmark".padEnd(nameWidth)
+    + "Total (ms)".padStart(colWidth)
+    + "Per op (ms)".padStart(colWidth)
+    + "Ops/sec".padStart(colWidth);
 console.log(header);
 console.log("─".repeat(header.length));
 for (const r of results) {
-    console.log(r.name.padEnd(nameWidth) +
-        r.total.padStart(colWidth) +
-        r.perOp.padStart(colWidth) +
-        String(r.opsPerSec).padStart(colWidth));
+    console.log(r.name.padEnd(nameWidth)
+        + r.total.padStart(colWidth)
+        + r.perOp.padStart(colWidth)
+        + String(r.opsPerSec).padStart(colWidth));
 }
 console.log();
 // Cleanup
 db.close();
-fs_1.default.rmSync(tmpDir, { recursive: true, force: true });
-//# sourceMappingURL=benchmark.js.map
+fs_1.default.rmSync(tmpDir, { recursive: true, force: true, });
+//# sourceMappingURL=Benchmark.js.map

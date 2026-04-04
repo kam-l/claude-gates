@@ -38,13 +38,17 @@ For plans and decisions, also apply:
 
 ## Verdict
 
-End with exactly one `Result:` line:
-- `Result: PASS` — no critical/high issues, artifact is sound
-- `Result: REVISE` — critical or high issues found, author must fix
-- `Result: CONVERGED` — re-review found no significant new issues
-- `Result: FAIL` — conditions not met (conditions pre-check only)
+Call the `gate_verdict` tool with your verdict. Parameters:
+- `session_id` — from your context (`session_id=...`)
+- `scope` — from your context (`scope=...`)
+- `verdict` — one of: `PASS`, `REVISE`, `FAIL`
+- `reason` — one-sentence summary of why
 
-CRITICAL or HIGH → always REVISE. Only MEDIUM/LOW → PASS. Genuinely solid → PASS; don't manufacture issues.
+Rules:
+- CRITICAL or HIGH findings → `REVISE`. Only MEDIUM/LOW → `PASS`. Genuinely solid → `PASS`.
+- `FAIL` — conditions not met (conditions pre-check only).
+- Re-review found no significant new issues → `PASS` (formerly CONVERGED).
+- If `gate_verdict` returns an error, retry once. If it fails again, fall back to writing `Result: PASS/REVISE/FAIL` as the last line of your response.
 
 ## Findings Format
 

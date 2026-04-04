@@ -1,0 +1,19 @@
+{
+  "typescript": {
+    "bracePosition": "nextLine",
+    "nextControlFlowPosition": "nextLine",
+    "operatorPosition": "nextLine",
+    "singleBodyPosition": "nextLine",
+    "lineWidth": 140,
+    "indentWidth": 2,
+    "quoteStyle": "alwaysDouble",
+    "semiColons": "always",
+    "trailingCommas": "always",
+    "useBraces": "always"
+  },
+  "plugins": [
+    "https://plugins.dprint.dev/typescript-0.93.4.wasm"
+  ],
+  "includes": ["src/**/*.ts"],
+  "excludes": ["node_modules", "scripts"]
+}

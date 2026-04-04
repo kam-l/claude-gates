@@ -9,3 +9,4 @@ scripts-backup/
 exported-sessions/
 .claude/agent-memory/
 .claude/research/
+coverage/
