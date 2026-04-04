@@ -1,9 +1,9 @@
 ---
-description: "Pipeline gates documentation and troubleshooting. Auto-triggers on: 'gate failed', 'agent blocked', 'missing artifact', 'verification failed', 'scope=', 'claude-gates', 'pipeline ordering', 'writing an agent', 'verification: field', 'conditions: field', 'Result: PASS', 'Result: FAIL', 'Result: REVISE', 'Result: CONVERGED', 'SubagentStop', 'SubagentStart', 'edit-gate', 'stop-gate', 'gate chain', 'post-completion gates'."
+description: "Pipeline gates documentation and troubleshooting. Auto-triggers on: 'gate failed', 'agent blocked', 'missing artifact', 'verification failed', 'scope=', 'claude-gates', 'pipeline ordering', 'writing an agent', 'verification: field', 'conditions: field', 'Result: PASS', 'Result: FAIL', 'Result: REVISE', 'Result: CONVERGED', 'SubagentStop', 'SubagentStart', 'gate chain', 'plan-gate', 'pipeline-block'."
 user-invocable: false
 ---
 
-# claude-gates v3
+# claude-gates
 
 Hook-level enforcement for agent pipelines. Semantics first, structure later — agents think freely, SubagentStop captures output and pivots verifiers for structured verdicts. Two verification layers:
 - **Deterministic**: artifact exists, `Result:` line present (verifiers only)
@@ -15,9 +15,9 @@ Hook-level enforcement for agent pipelines. Semantics first, structure later —
 ---
 name: implementer
 verification:                                # Ordered pipeline steps
-  - ["Does this show real implementation?"]  # SEMANTIC
-  - [reviewer, 3]                            # REVIEW (3 rounds max)
-  - [reviewer, 3, fixer]                     # REVIEW_WITH_FIXER
+  - ["Does this show real implementation?"]  # CHECK
+  - [reviewer, 3]                            # VERIFY (3 rounds max)
+  - [reviewer, 3, fixer]                     # VERIFY_W_FIXER
 conditions: |                                # Pre-spawn check (blocks on FAIL)
   Only spawn for auth or data changes.
 ---
@@ -37,16 +37,16 @@ Spawn with `scope=<name>`: `Agent({ subagent_type: "implementer", prompt: "scope
 
 | Type | Format | Execution |
 |------|--------|-----------|
-| SEMANTIC | `["prompt"]` | claude -p at SubagentStop |
-| COMMAND | `[/cmd, Tool1, Tool2]` | block allows listed tools, /pass_or_revise records verdict |
-| REVIEW | `[agent, maxRounds]` | block forces agent spawn, agent writes verdict |
-| REVIEW_WITH_FIXER | `[agent, N, fixer]` | same as REVIEW; REVISE routes to fixer instead of source |
+| CHECK | `["prompt"]` | claude -p at SubagentStop |
+| TRANSFORM | `[/cmd, Tool1, Tool2]` | block allows listed tools, orchestrator runs command |
+| VERIFY | `[agent, maxRounds]` | block forces agent spawn, agent writes verdict |
+| VERIFY_W_FIXER | `[agent, N, fixer]` | same as VERIFY; REVISE routes to fixer instead of source |
 
 ## Roles (engine.resolveRole)
 
 | Role | Identified by | Behavior |
 |------|--------------|----------|
-| source | `pipeline_state.source_agent` | SEMANTIC check → engine.step |
+| source | `pipeline_state.source_agent` | CHECK check → engine.step |
 | verifier | active step's `agent` field | implicit semantic → engine.step |
 | fixer | fix step's `fixer` field | implicit semantic → reactivate gate step |
 | gater | hardcoded `bareType === "gater"` | record verdict (feeds plan-gate) |
@@ -67,6 +67,6 @@ Failed pipeline recovery: delete rows via `deletePipeline(db, scope)`, re-spawn 
 | "Missing Result: line" | Verifiers must add `Result: PASS`, `REVISE`, `CONVERGED`, or `FAIL` |
 | "has verification but no scope" | Add `scope=<name>` to spawn prompt |
 | "expects agent X, not Y" | Pipeline step requires specific agent — spawn the named one |
-| "COMMAND step active" | Run the command, then `/pass_or_revise` |
-| Pipeline stuck | Run `/claude-gates:heal` with the session ID |
+| "TRANSFORM step active" | Run the command, then `/pass_or_revise` |
+| Pipeline stuck | Run `/claude-gates:unblock` with the session ID |
 | Debug leftovers at stop | Remove flagged patterns or stop again (nudge mode) |

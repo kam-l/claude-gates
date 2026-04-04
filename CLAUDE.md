@@ -11,9 +11,15 @@ Declarative pipeline gates — `verification:` unified array format in agent fro
 ## Build / Test
 
 ```bash
-node scripts/pipeline-test.js         # 93 unit/integration tests
-node scripts/test-pipeline-e2e.js     # 30 end-to-end tests
+node scripts/PipelineTest.js           # 110 unit/integration tests
+node scripts/PipelineE2eTest.js       # 28 end-to-end tests
 ```
+
+- TypeScript source in `src/`, compiled to `scripts/` — compiled JS tracked in git (consumers need no build step)
+- `tsconfig.json`: `strict: true`, CJS (`module: commonjs`), `outDir: scripts`, `rootDir: src`
+- Build: `npm run build` (tsc). Verify interop: no `exports.default` in compiled output.
+- Source files: PascalCase filenames (`PipelineEngine.ts`, `McpServer.ts`). No kebab-case in `src/`.
+- Formatting: Allman braces (`dprint`, `bracePosition: nextLine`). Run `npx dprint fmt` before committing.
 
 ## Frontmatter Quick Reference
 
@@ -21,10 +27,11 @@ node scripts/test-pipeline-e2e.js     # 30 end-to-end tests
 ---
 name: agent-name
 verification:                         # Ordered pipeline steps
-  - ["Semantic check prompt"]         # SEMANTIC
-  - [/command, Tool1, Tool2]          # COMMAND
-  - [reviewer, 3]                     # REVIEW (3 rounds)
-  - [reviewer, 3, fixer]             # REVIEW_WITH_FIXER
+  - ["Semantic check prompt"]         # CHECK
+  - [/command, Tool1, Tool2]          # TRANSFORM (orchestrator runs command)
+  - [cleaner!, 1]                      # TRANSFORM (auto-pass, no verdict)
+  - [reviewer?, 3]                    # VERIFY (3 rounds, ? is cosmetic)
+  - [reviewer?, 3, fixer!]            # VERIFY_W_FIXER
 conditions: |                         # Pre-spawn check (blocks on FAIL)
   Check if X is ready...
 ---
@@ -37,20 +44,45 @@ conditions: |                         # Pre-spawn check (blocks on FAIL)
 - `<agent_gate>` XML tag preserved for backward compat.
 - `better-sqlite3` is a hard dependency — installed via SessionStart hook.
 - Fail-open: every hook catches errors and exits 0.
-- **All hooks MUST exit 0.** Exit 2 causes Claude Code to ignore stdout JSON (including `systemMessage`). Use `msg.notify()` file side-channel for SubagentStop messages, not exit codes.
+- **All hooks MUST exit 0.** Exit 2 causes Claude Code to ignore stdout JSON (including `systemMessage`). Use `Messaging.notify()` file side-channel for SubagentStop messages, not exit codes.
+- Use `StepStatus` enum constants in all production hooks and engine code — never raw strings ('pending', 'active', 'complete'). Tests may use strings.
+- `GateRepository.initSchema` owns only its own tables; shared tables (agents, pipeline_state etc.) belong to `PipelineRepository.initSchema`.
+- `Tracing` must use `PipelineRepository` methods for any DB writes — no raw SQL outside repository classes.
 
 ## Design Principles
 
 - **Semantics first, structure later.** Agents do free-form reasoning. Output structure (`Result:` lines, sections) is a post-work concern — never inject structural requirements before an agent thinks. Only verifiers produce pipeline verdicts; source agents and fixers just write content.
+- **Gate agents vs gater:** Pipeline-spawned gate agents (gt-reviewer etc.) write free-form `Result: PASS/REVISE` output. SubagentStop spawns `claude-gates:gater` via `claude -p`, which reads that output and calls `gate_verdict` MCP. Gate agents never call MCP directly.
+
+## Architecture
+
+```
+src/
+  types/Enums.ts              # Verdict, StepType, PipelineStatus, StepStatus, AgentRole
+  types/Interfaces.ts         # IPipelineState, IPipelineStep, Action, VerificationStep, etc.
+  PipelineEngine.ts           # Class — state machine transitions (step, retryGateAgent)
+  PipelineRepository.ts       # Class — pipeline CRUD (schema + all DB operations)
+  GateRepository.ts           # Class — plan-gate attempts + MCP verdict storage
+  SessionManager.ts           # Static — openDatabase, getSessionDir, agentRunningMarker
+  FrontmatterParser.ts        # Static — extractFrontmatter, parseVerification, parseConditions
+  Messaging.ts                # Static — block, info, notify, log
+  Tracing.ts                  # Static — Langfuse + audit.jsonl
+  SessionContext.ts            # Hook: SessionStart — injects session context
+  PipelineVerification.ts     # Hook: SubagentStop — role dispatch + semantic checks
+  PipelineBlock.ts            # Hook: PreToolUse — blocks tools while pipeline active
+  PipelineConditions.ts       # Hook: PreToolUse:Agent — conditions + step enforcement
+  PipelineInjection.ts        # Hook: SubagentStart — context enrichment (pipeline creation deferred to SubagentStop)
+  PlanGate.ts                 # Hook: PreToolUse:ExitPlanMode — blocks unverified plans
+  PlanGateClear.ts            # Hook: PostToolUse:ExitPlanMode — clears gater verdict
+  McpServer.ts                # MCP: gate_verdict(verdict, check) + gate_status tools
+  Database.ts                 # Test helper — flat (db, scope, ...) API over PipelineRepository
+  StateMachine.ts             # Test helper — flat (db, scope, ...) API over PipelineEngine
+```
 
 ## Session State
 
-- Session data (DB + artifacts) at `{CWD}/.sessions/{shortId}/` (first 8 hex chars of UUID). Shared helper: `getSessionDir()` in `pipeline-shared.js`.
+- Session data (DB + artifacts) at `{CWD}/.sessions/{shortId}/` (first 8 hex chars of UUID). `SessionManager.getSessionDir()`.
 - SQLite via `better-sqlite3`. `session-cleanup.js` sweeps both `.sessions/` and legacy `~/.claude/sessions/`.
-- Engine: `scripts/pipeline.js` — owns ALL state transitions via `step()`.
-- v3 DB: `scripts/pipeline-db.js` — tables: `pipeline_state`, `pipeline_steps`, `agents`, `edits`, `tool_history`.
-- Supporting: `scripts/claude-gates-db.js` (plan-gate, stop-gate), `scripts/edit-gate.js` (edit tracking), `scripts/claude-gates-config.js` (config + commit-gate).
-
-## Configuration
-
-- `claude-gates.json` at repo root (optional). Module: `scripts/claude-gates-config.js`.
+- Engine: `PipelineEngine` — owns ALL state transitions via `step()`. Semantic dispatch in hook layer.
+- Pipeline DB: `PipelineRepository` — tables: `pipeline_state`, `pipeline_steps`, `agents`, `edits`, `tool_history`.
+- Gate DB: `GateRepository` — plan-gate attempts + MCP verdict. Separate schema, same `.db` file.

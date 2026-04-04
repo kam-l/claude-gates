@@ -10,12 +10,12 @@
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/session-cleanup.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/SessionCleanup.js",
             "timeout": 5000
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/session-context.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/SessionContext.js",
             "timeout": 2000
           }
         ]
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/pipeline-block.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/PipelineBlock.js",
             "timeout": 5000
           }
         ]
@@ -36,18 +36,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/pipeline-conditions.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/PipelineConditions.js",
             "timeout": 40000
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/commit-gate.js",
-            "timeout": 130000
           }
         ]
       },
@@ -56,7 +46,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-gate.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/PlanGate.js",
             "timeout": 5000
           }
         ]
@@ -68,27 +58,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-gate-clear.js",
-            "timeout": 5000
-          }
-        ]
-      },
-      {
-        "matcher": "Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/edit-gate.js",
-            "timeout": 5000
-          }
-        ]
-      },
-      {
-        "matcher": "Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/edit-gate.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/PlanGateClear.js",
             "timeout": 5000
           }
         ]
@@ -99,7 +69,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/pipeline-injection.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/PipelineInjection.js",
             "timeout": 5000
           }
         ]
@@ -110,30 +80,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/pipeline-verification.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/PipelineVerification.js",
             "timeout": 120000
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/stop-gate.js",
-            "timeout": 10000
-          }
-        ]
-      }
-    ],
-    "StopFailure": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/stop-gate.js",
-            "timeout": 10000
           }
         ]
       }

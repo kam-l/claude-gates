@@ -3,7 +3,7 @@
 Quality gates for Claude Code agents. Your agents shall not pass without earning it.
 
 [![Claude Code](https://img.shields.io/badge/Claude_Code-plugin-blueviolet)](https://code.claude.com/docs/en/plugins)
-[![Gates: 7](https://img.shields.io/badge/gates-7-orange)]()
+[![Gates: 4](https://img.shields.io/badge/gates-4-orange)]()
 [![Tests](https://github.com/kam-l/claude-gates/actions/workflows/test.yml/badge.svg)](https://github.com/kam-l/claude-gates/actions/workflows/test.yml)
 [![Version](https://img.shields.io/github/v/tag/kam-l/claude-gates?label=version)](https://github.com/kam-l/claude-gates/releases)
 [![Coverage](https://codecov.io/gh/kam-l/claude-gates/branch/master/graph/badge.svg)](https://codecov.io/gh/kam-l/claude-gates)
@@ -61,12 +61,9 @@ All are customizable by `/claude-gates:setup`.
 | Gate | Hook | What it does |
 |------|------|-------------|
 | **Conditions** | `PreToolUse:Agent` | Gater evaluates spawn prompt against `conditions:` field. FAIL blocks the spawn - orchestrator must correct it and try spawning again. |
-| **Verification** | `SubagentStop` | Subagent is forced to summarize it's work in a file. Separate Sonnet agent then verifies this file. |
-| **Pipeline** | `SubagentStop` → `PreToolUse:Agent` | Sequential reviewers from `verification:` field. Each must PASS before the next runs. Orchestrator MUST spawn them in order. |
+| **Verification** | `SubagentStop` | Subagent is forced to summarize its work in a file. Separate Sonnet agent then verifies this file. |
+| **Pipeline** | `SubagentStop` -> `PreToolUse:Agent` | Sequential reviewers from `verification:` field. Each must PASS before the next runs. Orchestrator MUST spawn them in order. |
 | **Plan** | `PreToolUse:ExitPlanMode` | Blocks unreviewed plans (>20 lines) until gater returns PASS. Auto-allows after 3 attempts. |
-| **Commit** | `PreToolUse:Bash` | Runs configured commands before `git commit` to eg. block commiting until tests pass. Disabled by default. |
-| **Edit** | `PostToolUse:Edit\|Write` | Tracks edited files, runs opt-in formatters (deduped per file) with some default ones suggested per language. Non-blocking |
-| **Stop** | `Stop` + `StopFailure` | Scans edited files for debug patterns (`TODO`, `console.log`). Nudges uncommitted changes. On API errors, clears orphaned gates so the pipeline can retry cleanly |
 
 - **Hook-level enforcement** — gates are Claude Code hooks (`PreToolUse`, `SubagentStop`, `Stop`), not prompt instructions. They block tool calls via exit codes, not suggestions.
 - **SQLite-backed state** — all pipeline state (verdicts, rounds, scopes, edits) lives in a per-session `session.db` via `better-sqlite3`. Atomic transactions, no file-locking races.
@@ -121,7 +118,7 @@ The implementer stops again, now with an artifact on disk. A separate Sonnet gat
 **5. Reviewer gate** (`PreToolUse` blocks everything)
 **All tools except spawning `reviewer` are now blocked.\*** The orchestrator must spawn it. The reviewer reads the implementer's artifact, cross-references the codebase, and writes its own verdict with `Result: PASS` or `Result: REVISE`.
 
-\* With few exceptions: Read, Grep, Glob, TodoCreate, TodoUpdate, `/claude-gates:heal`.
+\* With few exceptions: Read, Grep, Glob, TodoCreate, TodoUpdate, `/claude-gates:unblock`.
 
 **6. Revision loop** (if REVISE)
 REVISE routes to the `fixer` agent (if the step is `[reviewer, 3, fixer]`). The fixer reads both the implementer's artifact and the reviewer's findings, produces corrections. The reviewer runs again on the updated work. This loops up to 3 rounds. If the reviewer's own review is sloppy, a meta-review catches it and forces the reviewer to retry.
@@ -135,9 +132,9 @@ Throughout all of this, Claude (the orchestrator) never sees the gate machinery.
 
 | Skill | What it does |
 |-------|-------------|
-| `/claude-gates:setup` | Interactive setup — installs deps, explains each gate, writes `claude-gates.json` |
+| `/claude-gates:setup` | Interactive setup — installs deps, explains each gate, creates sample agents |
 | `/claude-gates:claude-gates` | Documentation and troubleshooting reference |
-| `/claude-gates:heal` | Diagnoses and repairs stuck pipeline state |
+| `/claude-gates:unblock` | Diagnoses and repairs stuck pipeline state |
 
 ## Architecture
 
@@ -147,27 +144,23 @@ hooks.json
   ├─ SessionStart ──→ session-cleanup.js (sweep old sessions)
   │                   npm install (better-sqlite3 into CLAUDE_PLUGIN_DATA)
   │
-  ├─ PreToolUse ────→ pipeline-block.js  (block ALL tools except those required when pipeline is active)
-  │                   pipeline-conditions.js (`conditions: `pre-spawn check before Agent tool)
-  │                   commit-gate.js     (pre-commit hooks before Bash(git commit) tool)
-  │                   plan-gate.js       (plan review before ExitPlanMode tool)
+  ├─ PreToolUse ────→ pipeline-block.js      (block tools while pipeline active)
+  │                   pipeline-conditions.js  (conditions: pre-spawn check, Agent)
+  │                   plan-gate.js            (plan review, ExitPlanMode)
   │
-  ├─ PostToolUse ───→ edit-gate.js       (track edits, run formatters after Write/Edit tools)
-  │                   plan-gate-clear.js (clear plan gate after exit after ExitPlanMode tool)
+  ├─ PostToolUse ───→ plan-gate-clear.js     (clear plan gate, ExitPlanMode)
   │
-  ├─ SubagentStart ─→ pipeline-injection.js (role context for verifiers/fixers)
+  ├─ SubagentStart ─→ pipeline-injection.js  (pipeline creation + role context)
   │
-  ├─ SubagentStop ──→ pipeline-verification.js (verdict → state machine)
-  │
-  └─ Stop ──────────→ stop-gate.js (debug pattern scan, cleanup)
+  └─ SubagentStop ──→ pipeline-verification.js (verdict → state machine)
 
-Engine: pipeline.js ─── state machine, owns ALL transitions via step()
-State:  pipeline-db.js ─ SQLite tables: pipeline_state, pipeline_steps,
-                         agents, edits, tool_history
-Config: claude-gates-config.js ─ reads claude-gates.json
+Engine: PipelineEngine.ts ─── state machine, owns ALL transitions via step()
+State:  PipelineRepository.ts ─ SQLite tables: pipeline_state, pipeline_steps,
+                                 agents, edits, tool_history
+Gates:  GateRepository.ts ─── plan-gate attempts + MCP verdict storage
 ```
 
-~4,900 LOC across 19 scripts. 93 unit tests + 30 end-to-end tests. See [CHANGELOG.md](CHANGELOG.md) for version history.
+TypeScript source in `src/`, compiled to `scripts/`. 108 unit tests + 28 end-to-end tests. See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ## Performance
 
@@ -181,7 +174,7 @@ Benchmarks on the pipeline engine (1,000 iterations, SQLite WAL mode):
 | DB write (setVerdict) | 0.04 ms | 24,148 |
 | Concurrent isolation (10 pipelines) | 9.76 ms | 102 |
 
-Run `node scripts/benchmark.js` to reproduce.
+Run `node scripts/Benchmark.js` to reproduce.
 
 ## Configuration
 
@@ -190,8 +183,8 @@ Run `/claude-gates:setup` to configure all interactively.
 ## Testing
 
 ```bash
-node scripts/pipeline-test.js         # 93 unit/integration tests
-node scripts/test-pipeline-e2e.js     # 30 end-to-end tests
+node scripts/PipelineTest.js           # 108 unit/integration tests
+node scripts/PipelineE2eTest.js       # 28 end-to-end tests
 ```
 
 ## License

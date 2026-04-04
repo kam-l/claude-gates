@@ -1,155 +1,287 @@
-# Architecture Guide (for .NET developers)
+# Architecture
 
-This codebase is a Claude Code plugin written in Node.js. If you know C#/.NET, this guide maps every concept to something you already understand.
+claude-gates is a **MCP sidecar** for Claude Code, wired via hooks and tool calls, that enforces declared verification pipelines.
 
-## Mental Model
+## Two Pipelines
+
+### Plan Pipeline (implicit)
+
+Every `ExitPlanMode` requires `gater` agent approval.
+
+**Bypasses:**
+- **Trivial plan**: plans <=20 lines skip gater (not worth the cost)
+- **Safety valve**: after 3 blocked attempts, auto-allows (prevents deadlock if gater fails)
+
+**Flow:** `PreToolUse:ExitPlanMode` -> check SQLite for gater PASS -> block or allow.
+
+### Agent Pipeline (explicit)
+
+If an agent has `verification:` frontmatter, spawning it creates a pipeline that enforces the source agent, orchestrator, and subsequent pipeline agents into a rigid workflow.
+
+## Agent Types
 
 ```
-Claude Code (the IDE)          claude-gates (this plugin)
-=======================        ===========================
-VS Extension / Middleware  →   Hook scripts in scripts/
-IServiceCollection         →   require() calls at top of file
-DbContext                  →   pipeline-db.js (static methods)
-State machine / MediatR    →   pipeline.js (step function)
-Middleware pipeline        →   Hook chain: conditions → injection → verification → block
+source ──> checker ──> verifier ──> checker
+               |           |           |
+               |           |       (decides if verdict legit)
+               |       (reviews artifact)
+           (validates source output)
+
+transformer ──> (auto-pass, no checker)
+fixer ──> checker
 ```
 
-**Each hook script = one .NET middleware component.** It reads JSON from stdin (like `HttpContext`), does work, optionally writes JSON to stdout (like modifying the `Response`), and exits with code 0 (like calling `next()`).
+### source
+
+The agent that spawned the pipeline. Produces the primary artifact.
+
+- Always has a checker (implicit lightweight validation: file exists, non-trivial content, has structure)
+- Checker PASS -> pipeline progresses to next step
+- Checker FAIL -> source must be resumed by orchestrator to fix its output
+
+### checker
+
+Quality gate on another agent's output. Runs as `gater` agent via `claude -p`.
+
+- For **source**: validates the artifact is substantive and well-formed
+- For **verifier**: validates the review verdict is legitimate and evidence-based
+- For **fixer**: validates the fix addressed revision instructions
+- Calls `gate_verdict` MCP tool to record verdict AND drive pipeline transitions
+- Not a pipeline step itself — it's a hook-layer operation triggered by `SubagentStop`
+
+> **Implementation note (current):** Source checker is a lightweight built-in heuristic, not a full gater call. Verifier and fixer checkers use `claude -p` gater.
+
+### verifier
+
+Declared with `[agent?, rounds]` in `verification:`. Reviews the source artifact.
+
+- Has own checker (gater validates the review quality)
+- Produces a verdict: PASS, REVISE, or FAIL
+- Checker validates the verdict:
+  - Verdict legit AND PASS -> `gate_verdict(verdict=PASS, check=PASS)` -> pipeline advances
+  - Verdict legit AND REVISE -> `gate_verdict(verdict=REVISE, check=PASS)` -> pipes back to source or fixer
+  - Verdict NOT legit -> `gate_verdict(verdict=*, check=FAIL)` -> verifier is retried
+
+### transformer
+
+Declared with `[agent!, rounds]` in `verification:`. Runs a transformation step.
+
+- No checker — auto-passes on completion
+- Pipeline progresses immediately after transformer finishes
+
+### fixer
+
+Declared via `[verifier?, rounds, fixer!]` in `verification:`. Addresses reviewer findings.
+
+- Has own checker (gater validates fix quality)
+- Activated when verifier returns REVISE on a `VERIFY_W_FIXER` step
+- After fixer completes, pipeline reactivates the verifier step for re-review
+
+## Frontmatter Format
+
+```yaml
+---
+name: agent-name
+verification:                         # Ordered pipeline steps
+  - ["Semantic check prompt"]         # CHECK (explicit source checker prompt)
+  - [/command, Tool1, Tool2]          # TRANSFORM (orchestrator runs command)
+  - [cleaner!, 1]                     # TRANSFORM (auto-pass, no checker)
+  - [reviewer?, 3]                    # VERIFY (3 rounds max)
+  - [reviewer?, 3, fixer!]           # VERIFY_W_FIXER
+conditions: |                         # Pre-spawn check (blocks on FAIL)
+  Check if X is ready...
+---
+```
+
+## Parallelism
+
+Source agents run in parallel. Pipelines are **deferred** — created at SubagentStop (when source completes), not at SubagentStart (when source spawns). This means:
+
+- Multiple source agents can run concurrently without blocking each other
+- Pipeline enforcement (blocking, verification) only activates after a source finishes
+- The orchestrator processes verification steps sequentially (single-threaded), but source work is never held up
+
+```
+  source-A spawns ──────────────── source-A stops ──> pipeline-A created ──> verify-A
+  source-B spawns ──────────── source-B stops ──> pipeline-B created ──> verify-B
+  source-C spawns ────── source-C stops ──> pipeline-C created ──> verify-C
+                    (parallel)              (sequential verification)
+```
+
+**Key invariant:** No pipeline exists in DB while its source agent is running. `pipeline-block.ts` and `pipeline-conditions.ts` see nothing to enforce during source execution.
+
+> **Implementation gap:** Pipeline creation currently happens at SubagentStart (`pipeline-injection.ts`), and `pipeline-conditions.ts` enforces sequential execution across scopes. Target: move `createPipeline` to SubagentStop, remove sequential scope guard from conditions.
+
+## Hook Chain
+
+Pipeline enforcement happens across four hooks that must stay in sync:
+
+```
+SessionStart
+  -> session-context.ts: injects [ClaudeGates] awareness to orchestrator
+
+PreToolUse (every tool call)
+  -> pipeline-block.ts: blocks all tools except next required pipeline action + allowlist
+  -> pipeline-conditions.ts (Agent only): conditions check + scope registration
+  -> plan-gate.ts (ExitPlanMode only): blocks until gater approves plan
+
+SubagentStart
+  -> pipeline-injection.ts: injects role context for verifiers/fixers (pipeline already exists)
+
+SubagentStop
+  -> pipeline-verification.ts: creates pipeline (for sources), artifact capture, role dispatch, checker invocation
+
+PostToolUse
+  -> plan-gate-clear.ts (ExitPlanMode only): clears gater verdict after plan exits
+```
+
+### SubagentStop Detail (main logic)
+
+1. **Pipeline creation** (source only): create pipeline from `verification:` frontmatter if not exists
+2. **Artifact capture**: first call pivots agent to write artifact to correct filepath; second+ call proceeds with verification
+3. **Role resolution**: engine determines agent's role from pipeline state
+4. **Checker invocation** (for source/verifier/fixer): runs gater via `claude -p`
+5. **Pipeline transition**: checker calls `gate_verdict` MCP which drives `engine.step()`
+
+## MCP Tools
+
+### gate_verdict
+
+Records verdict and drives pipeline state transitions. Single point of truth for all pipeline logic.
+
+**Parameters:**
+| Param | Type | Description |
+|-------|------|-------------|
+| `session_id` | string | Session UUID |
+| `scope` | string | Pipeline scope or `verify-plan` for plan-gate |
+| `verdict` | PASS/REVISE/FAIL | What the reviewed agent concluded |
+| `check` | PASS/FAIL | Checker's quality assessment of the review |
+| `reason` | string | Human-readable explanation |
+
+**Behavior by context:**
+- **Plan-gate** (`scope=verify-plan`): records gater verdict for `plan-gate.ts` to read
+- **Source checker**: `check=PASS` -> advance; `check=FAIL` -> source must revise
+- **Verifier checker**: `check=PASS` + `verdict=PASS` -> advance; `check=PASS` + `verdict=REVISE` -> revision; `check=FAIL` -> retry verifier
+- **Fixer checker**: `check=PASS` -> reactivate verifier step; `check=FAIL` -> retry fixer
+
+> **Implementation gap:** Current `gate_verdict` only records verdicts. Hook layer still drives `engine.step()`. Target: all transition logic moves into MCP handler.
+
+### gate_status
+
+Read-only pipeline state query. Available to all agents.
+
+## MCP Access Control
+
+**Invariant: only gater/checker can call `gate_verdict` to affect pipeline state. Everyone can query `gate_status`.**
+
+Enforcement: MCP server is NOT registered at SessionStart for the orchestrator session. Instead, MCP config is injected only for `claude -p` gater calls (checker invocations).
+
+> **Implementation gap:** Current code runs `claude mcp add claude-gates` at SessionStart, giving all agents MCP access. Target: remove this, inject MCP config per-gater-call only.
+
+## State Machine (PipelineEngine)
+
+```
+                    +---------------------------------------------+
+                    |              Pipeline States                 |
+                    |                                              |
+   createPipeline() |  +--------+    PASS     +-----------+       |
+   -----------------+->| normal |------------>| completed |       |
+                    |  +----+---+             +-----------+       |
+                    |       |                                      |
+                    |       | REVISE                               |
+                    |       v                                      |
+                    |  +----------+   source/fixer    +--------+  |
+                    |  | revision |---completes------->| normal |  |
+                    |  +----+-----+   (reactivate)    +--------+  |
+                    |       |                                      |
+                    |       | rounds > maxRounds                   |
+                    |       v                                      |
+                    |  +--------+                                  |
+                    |  | failed |                                  |
+                    |  +--------+                                  |
+                    +---------------------------------------------+
+
+Step statuses: pending -> active -> passed
+                              \-> revise (source must redo)
+                              \-> fix    (fixer must fix)
+                              \-> failed (exhausted rounds)
+```
+
+## Enums
+
+```typescript
+AgentRole:  Source | Checker | Verifier | Fixer | Transformer | Ungated
+StepType:   CHECK | VERIFY | VERIFY_W_FIXER | TRANSFORM
+Verdict:    PASS | REVISE | FAIL | CONVERGED | UNKNOWN
+```
+
+> **Implementation gap:** `AgentRole.Checker` does not exist in code yet.
 
 ## Directory Structure
 
 ```
-scripts/
-  pipeline-shared.js          # Shared utilities — like a Utils/Helpers static class
-  pipeline-db.js              # SQLite CRUD — like a Repository<T> (all static methods)
-  pipeline.js                 # State machine engine — like IStateMachine.Step()
-  messages.js                 # Output formatting — like ILogger with channels
-  tracing.js                  # Langfuse observability — like AddOpenTelemetry() (opt-in)
+src/
+  types/Enums.ts              # Verdict, StepType, PipelineStatus, StepStatus, AgentRole
+  types/Interfaces.ts         # IPipelineState, IPipelineStep, Action, VerificationStep, etc.
+  PipelineEngine.ts           # State machine transitions (step, retryGateAgent)
+  PipelineRepository.ts       # Pipeline CRUD (schema + DB operations)
+  GateRepository.ts           # Plan-gate attempts + MCP verdict storage
+  SessionManager.ts           # openDatabase, getSessionDir, agentRunningMarker
+  FrontmatterParser.ts        # extractFrontmatter, parseVerification, parseConditions
+  Messaging.ts                # block, info, notify, log
+  Tracing.ts                  # Langfuse + audit.jsonl
 
-  pipeline-conditions.js      # Hook: PreToolUse:Agent — pre-spawn gate
-  pipeline-injection.js       # Hook: SubagentStart — context injection
-  pipeline-verification.js    # Hook: SubagentStop — verdict processing (main logic)
-  pipeline-block.js           # Hook: PreToolUse — blocks tools during active pipeline
-  stop-gate.js                # Hook: OnStop — session cleanup
-
-  commit-gate.js              # Hook: PreToolUse:Bash — commit validation
-  edit-gate.js                # Hook: PostToolUse:Edit/Write — edit tracking
-  plan-gate.js                # Hook: PreToolUse:ExitPlanMode — plan review gate
-  plan-gate-clear.js          # Hook: PostToolUse:ExitPlanMode — clears plan gate
-  session-cleanup.js          # Hook: SessionStart — cleanup old sessions
-  session-context.js          # Hook: SessionStart — injects session context
-
-  claude-gates-db.js          # Legacy v2 DB module (backward compat)
-  claude-gates-config.js      # Config loader (claude-gates.json)
-
-  pipeline-test.js            # Unit tests (93 tests — like [Fact] methods)
-  test-pipeline-e2e.js        # E2E tests (30 tests)
-  test-pipeline.js            # Older test file
-
-.claude/agents/               # Agent definitions (YAML frontmatter + markdown body)
-.claude-plugin/plugin.json    # Plugin manifest (like a .csproj for packaging)
+  session-context.ts          # Hook: SessionStart
+  pipeline-verification.ts    # Hook: SubagentStop — artifact capture + checker dispatch
+  pipeline-block.ts           # Hook: PreToolUse — blocks tools during active pipeline
+  pipeline-conditions.ts      # Hook: PreToolUse:Agent — conditions + step enforcement
+  pipeline-injection.ts       # Hook: SubagentStart — pipeline creation + context enrichment
+  plan-gate.ts                # Hook: PreToolUse:ExitPlanMode
+  plan-gate-clear.ts          # Hook: PostToolUse:ExitPlanMode
+  mcp-server.ts               # MCP: gate_verdict + gate_status
+  database.ts                 # Test helper over PipelineRepository
+  state-machine.ts            # Test helper over PipelineEngine
 ```
 
-## Data Flow — One Pipeline Run
+## Session State
+
+- Session data at `{CWD}/.sessions/{shortId}/` (first 8 hex of UUID)
+- SQLite via `better-sqlite3`. Tables: `pipeline_state`, `pipeline_steps`, `agents`, `edits`, `tool_history`
+- Gate DB: plan-gate attempts + MCP verdict. Separate schema, same `.db` file.
+
+## Key Invariants
+
+- `${CLAUDE_PLUGIN_ROOT}/scripts/...` for all hook paths
+- Pipeline: conditions -> injection -> verification -> block. All four + engine must stay in sync.
+- `<agent_gate>` XML tag preserved for backward compat.
+- `better-sqlite3` is a hard dependency (installed via SessionStart hook).
+- **Fail-open**: every hook catches errors and exits 0.
+- **All hooks MUST exit 0.** Exit 2 causes Claude Code to ignore stdout JSON.
+- `Messaging.notify()` file side-channel for SubagentStop messages.
+
+## Design Principles
+
+- **Semantics first, structure later.** Agents do free-form reasoning. Output structure is a post-work concern. Only checkers/verifiers produce pipeline verdicts; source agents and fixers just write content.
+- **Gate agents vs gater:** Pipeline-spawned gate agents write free-form output. SubagentStop spawns gater via `claude -p`, which reads that output and calls `gate_verdict` MCP. Gate agents never call MCP directly — gater (as checker) does.
+
+## .NET Mental Model
 
 ```
-Step 1: User asks Claude to spawn an agent with scope=my-task
-        ↓
-Step 2: pipeline-conditions.js (PreToolUse:Agent)
-        ├─ Reads agent .md file, parses conditions: field
-        ├─ Runs semantic pre-check (optional): "Is the codebase ready?"
-        ├─ Registers agent in SQLite (agents table)
-        ├─ Writes .running-{scope} marker file
-        └─ Exits 0 (allows spawn) or writes { decision: "block" } (blocks spawn)
-        ↓
-Step 3: pipeline-injection.js (SubagentStart)
-        ├─ Creates pipeline: inserts pipeline_state + pipeline_steps rows
-        ├─ Resolves agent role: source | verifier | fixer
-        ├─ Injects context for verifiers/fixers (artifact path, round info)
-        └─ Exits 0 (with optional additionalContext in stdout JSON)
-        ↓
-Step 4: Agent runs... (Claude Code handles this, not our code)
-        ↓
-Step 5: pipeline-verification.js (SubagentStop)  ← THIS IS THE MAIN FILE
-        ├─ Resolves scope (transcript → message → DB fallback)
-        ├─ Finds/creates artifact file ({scope}/{agentType}.md)
-        ├─ Dispatches by role:
-        │   source   → run SEMANTIC check if active step is SEMANTIC
-        │   verifier → run implicit semantic check + extract Result: verdict
-        │   fixer    → run implicit semantic check
-        ├─ Calls engine.step(db, scope, { role, artifactVerdict, semanticVerdict })
-        │   ↓ returns next Action:
-        │   { action: "spawn", agent: "reviewer" }  → reviewer needs to run
-        │   { action: "source", agent: "worker" }   → source needs revision
-        │   { action: "done" }                       → pipeline complete!
-        │   { action: "failed" }                     → exhausted max rounds
-        └─ Writes notification to .pipeline-notifications file
-        ↓
-Step 6: pipeline-block.js (PreToolUse — fires on EVERY tool call)
-        ├─ Queries engine.getAllNextActions(db) — what's expected?
-        ├─ If tool call matches expected action → exit 0 (allow)
-        ├─ If not → write { decision: "block", reason: "Spawn reviewer first" }
-        └─ Surfaces notifications from Step 5 via systemMessage
-        ↓
-Step 7: Repeat Steps 2-6 for each agent in the pipeline
-        (reviewer runs → verification checks verdict → next step or done)
+Claude Code (the IDE)          claude-gates (this plugin)
+=======================        ===========================
+VS Extension / Middleware  ->  Hook scripts in scripts/
+IServiceCollection         ->  import/require at top of file
+DbContext + Repository     ->  PipelineRepository / GateRepository (classes)
+State machine / MediatR    ->  PipelineEngine (class with step() method)
+Middleware pipeline        ->  Hook chain: conditions -> injection -> verification -> block
 ```
 
-## State Machine (pipeline.js)
+Each hook script = one middleware component. Reads JSON from stdin (`HttpContext`), does work, optionally writes JSON to stdout (`Response`), exits 0 (`next()`).
 
-```
-                    ┌─────────────────────────────────────────────┐
-                    │              Pipeline States                 │
-                    │                                              │
-   createPipeline() │  ┌────────┐    PASS     ┌───────────┐      │
-   ─────────────────┼─→│ normal │────────────→│ completed │      │
-                    │  └────┬───┘             └───────────┘      │
-                    │       │                                      │
-                    │       │ REVISE                               │
-                    │       ↓                                      │
-                    │  ┌──────────┐   source/fixer    ┌────────┐  │
-                    │  │ revision │───completes───────→│ normal │  │
-                    │  └────┬─────┘   (reactivate)    └────────┘  │
-                    │       │                                      │
-                    │       │ rounds > maxRounds                   │
-                    │       ↓                                      │
-                    │  ┌────────┐                                  │
-                    │  │ failed │                                  │
-                    │  └────────┘                                  │
-                    └─────────────────────────────────────────────┘
+## Implementation Gaps (vs this architecture)
 
-Step statuses: pending → active → passed
-                              ↘ revise (source must redo)
-                              ↘ fix    (fixer must fix)
-                              ↘ failed (exhausted rounds)
-```
-
-## Key .NET ↔ JS Patterns
-
-### "DI" — There is none
-JS uses `require()` at the top of each file. Every dependency is a static import. There's no IoC container — functions just call other functions directly.
-
-### "Entity Framework" — It's raw SQL
-`pipeline-db.js` uses `better-sqlite3` which is like using `SqlConnection` + `SqlCommand` directly. `db.prepare("SQL").run(params)` = `command.ExecuteNonQuery()`. Rows come back as plain objects (like anonymous types), not tracked entities.
-
-### "async/await" — Almost nothing is async
-All file I/O uses `readFileSync`, all DB calls are synchronous. The only async operation is Langfuse's `shutdownAsync()`, which is deliberately fire-and-forget.
-
-### "Middleware" → Hook scripts
-Each hook script is registered in `.claude-plugin/plugin.json` and fires on specific events (like `app.UseMiddleware<T>()` for different request types). The "next()" equivalent is `process.exit(0)`.
-
-### Error handling → try/catch + exit 0
-Every hook wraps its entire body in `try { ... } catch { process.exit(0) }`. This is the "fail-open" pattern — if anything goes wrong, the hook silently allows the operation to proceed. Like middleware that calls `next()` in its catch block.
-
-## Testing
-
-```bash
-node scripts/pipeline-test.js       # 93 unit tests — tests pipeline-db + pipeline.js
-node scripts/test-pipeline-e2e.js   # 30 e2e tests — tests hook scripts end-to-end
-```
-
-Tests use a simple `test(name, fn)` / `assert` pattern (no Jest/Mocha). Like `[Fact]` methods in xUnit but without a test runner — just a script that runs assertions and counts pass/fail.
-
-## Observability (Langfuse)
-
-Opt-in via environment variables. When enabled, each pipeline run produces a Langfuse trace with spans for key operations (pipeline creation, verdict processing, semantic checks, engine state transitions). See `scripts/tracing.js` for the .NET analogy comments.
+1. **Parallel pipelines** — pipeline creation currently happens at SubagentStart; `pipeline-conditions.ts` enforces sequential execution across scopes. Target: move `createPipeline` to SubagentStop, remove sequential scope guard.
+2. **`AgentRole.Checker`** — not in Enums.ts yet.
+3. **`gate_verdict` drives transitions** — MCP handler currently only records verdicts; hook layer still calls `engine.step()`. Target: move all transition logic into MCP handler with `(verdict, check)` params.
+4. **MCP access control** — `claude mcp add` in SessionStart gives all agents access. Target: remove, inject MCP config only for gater `claude -p` calls.
+5. **Implicit source checker** — source always gets a lightweight built-in check (file exists, non-trivial). Not implemented yet; currently only declared CHECK steps trigger a check.
