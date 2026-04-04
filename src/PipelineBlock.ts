@@ -44,7 +44,7 @@ function sourceReason(act: any,)
   return ".";
 }
 
-export function onPreToolUse(data: any,): void
+export async function onPreToolUse(data: any,): Promise<void>
 {
   const sessionId = data.session_id || "";
   if (!sessionId)
@@ -80,25 +80,8 @@ export function onPreToolUse(data: any,): void
     const pipelineEngine = new PipelineEngine(repo,);
     actions = pipelineEngine.getAllNextActions();
 
-    // Stash trace IDs before closing DB (Langfuse needs them after db.close)
+    // Trace ID is now deterministic from sessionId — no DB stash needed
     traceScopes = {};
-    if (actions && actions.length > 0)
-    {
-      for (const act of actions)
-      {
-        try
-        {
-          const state = repo.getPipelineState(act.scope,);
-          if (state && state.trace_id)
-          {
-            traceScopes[act.scope] = state.trace_id;
-          }
-        }
-        catch
-        {
-        }
-      }
-    }
   }
   finally
   {
@@ -208,23 +191,21 @@ export function onPreToolUse(data: any,): void
     }
   }
 
-  // Langfuse: trace block decisions (fire-and-forget, no DB needed — trace IDs stashed earlier)
+  // Langfuse: trace block decisions — session-level trace with scope spans
   try
   {
     const { langfuse, enabled, } = Tracing.init();
     if (enabled)
     {
+      const traceId = Tracing.sessionTraceId(sessionId,);
+      const trace = langfuse.trace({ id: traceId, name: `session`, sessionId, },);
       for (const act of actions)
       {
-        const traceId = traceScopes[act.scope];
-        if (!traceId)
-        {
-          continue;
-        }
-        const trace = langfuse.trace({ id: traceId, name: `pipeline:${act.scope}`, sessionId, },);
-        trace.span({ name: "tool-blocked", input: { toolName, scope: act.scope, expectedAgent: act.agent, }, },).end();
+        const scopeSpan = Tracing.scopeSpan(trace, act.scope,);
+        scopeSpan.span({ name: "tool-blocked", input: { toolName, scope: act.scope, expectedAgent: act.agent, }, },).end();
+        scopeSpan.end();
       }
-      Tracing.flush(langfuse, enabled,);
+      await Tracing.flush(langfuse, enabled,);
     }
   }
   catch
@@ -248,11 +229,14 @@ export function onPreToolUse(data: any,): void
 
 // ── Entry point (thin wrapper) ──────────────────────────────────────
 
-try
+(async () =>
 {
-  onPreToolUse(JSON.parse(fs.readFileSync(0, "utf-8",),),);
-}
-catch
-{
-  process.exit(0,); // fail-open
-}
+  try
+  {
+    await onPreToolUse(JSON.parse(fs.readFileSync(0, "utf-8",),),);
+  }
+  catch
+  {
+    process.exit(0,); // fail-open
+  }
+})();

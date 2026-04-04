@@ -277,7 +277,7 @@ function implicitSourceCheck(content, artifactPath) {
     return null;
 }
 // ── Handler (exported for hook-handler barrel + testing) ────────────
-function onSubagentStop(data) {
+async function onSubagentStop(data) {
     const isContinuation = !!data.stop_hook_active;
     const agentType = data.agent_type || "";
     if (!agentType) {
@@ -453,20 +453,22 @@ function onSubagentStop(data) {
         // ── Langfuse tracing ──
         const { langfuse, enabled, } = Tracing_1.Tracing.init();
         const trace = Tracing_1.Tracing.getOrCreateTrace(langfuse, enabled, db, scope, sessionId);
+        const scopeSpan = Tracing_1.Tracing.scopeSpan(trace, scope);
         // ── Dispatch by role ──
         if (role === Enums_1.AgentRole.Transformer) {
-            handleTransformer(repo, pipelineEngine, scope, bareAgentType, artifactPath, sessionDir, trace);
+            handleTransformer(repo, pipelineEngine, scope, bareAgentType, artifactPath, sessionDir, scopeSpan, enabled);
         }
         else if (role === Enums_1.AgentRole.Source) {
-            handleSource(repo, pipelineEngine, scope, bareAgentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir, sessionId, trace);
+            handleSource(repo, pipelineEngine, scope, bareAgentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir, sessionId, scopeSpan, enabled);
         }
         else if (role === Enums_1.AgentRole.Verifier) {
-            handleVerifier(repo, pipelineEngine, scope, bareAgentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir, sessionId, trace, false);
+            handleVerifier(repo, pipelineEngine, scope, bareAgentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir, sessionId, scopeSpan, enabled, false);
         }
         else if (role === Enums_1.AgentRole.Fixer) {
-            handleFixer(repo, pipelineEngine, scope, bareAgentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir, sessionId, trace);
+            handleFixer(repo, pipelineEngine, scope, bareAgentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir, sessionId, scopeSpan, enabled);
         }
-        Tracing_1.Tracing.flush(langfuse, enabled);
+        scopeSpan.end();
+        await Tracing_1.Tracing.flush(langfuse, enabled);
     }
     finally {
         db.close();
@@ -474,15 +476,17 @@ function onSubagentStop(data) {
     process.exit(0);
 }
 // ── Entry point (thin wrapper) ──────────────────────────────────────
-try {
-    onSubagentStop(JSON.parse(fs_1.default.readFileSync(0, "utf-8")));
-}
-catch (err) {
-    Messaging_1.Messaging.log("⚠️", `Error: ${err?.message}`);
-    process.exit(0); // fail-open
-}
+(async () => {
+    try {
+        await onSubagentStop(JSON.parse(fs_1.default.readFileSync(0, "utf-8")));
+    }
+    catch (err) {
+        Messaging_1.Messaging.log("⚠️", `Error: ${err?.message}`);
+        process.exit(0); // fail-open
+    }
+})();
 // ── Role handlers ────────────────────────────────────────────────────
-function handleSource(repo, pipelineEngine, scope, agentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir, sessionId, trace) {
+function handleSource(repo, pipelineEngine, scope, agentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir, sessionId, trace, enabled) {
     // If pipeline is in revision state, reactivate the step FIRST.
     // This ensures the CHECK step is "active" again before we check for it.
     const state = repo.getPipelineState(scope);
@@ -495,8 +499,8 @@ function handleSource(repo, pipelineEngine, scope, agentType, artifactPath, arti
             logAction(sessionDir, nextAction, scope);
             trace.span({
                 name: "engine-step",
-                input: { role: "source", artifactVerdict, },
-                output: { action: nextAction && nextAction.action, },
+                input: { role: "source", agent: agentType, artifactVerdict, },
+                output: { action: nextAction?.action, nextAgent: nextAction?.agent, round: nextAction?.round, maxRounds: nextAction?.maxRounds, },
             }).end();
             return;
         }
@@ -511,7 +515,12 @@ function handleSource(repo, pipelineEngine, scope, agentType, artifactPath, arti
         recordVerdict(repo, scope, agentType, "FAIL");
         const failAction = pipelineEngine.step(scope, { role: "source", artifactVerdict: "FAIL", });
         logAction(sessionDir, failAction, scope);
-        trace.span({ name: "implicit-check", input: { agent: agentType, }, output: { verdict: "FAIL", reason: implicitCheckResult, }, }).end();
+        trace.span({
+            name: "implicit-check",
+            input: { agent: agentType, artifactPath: path_1.default.basename(artifactPath), artifactSize: artifactContent.length, },
+            output: { verdict: "FAIL", reason: implicitCheckResult, },
+        }).end();
+        Tracing_1.Tracing.score(trace, enabled, "verdict", "FAIL", implicitCheckResult);
         return;
     }
     // Check if active step is CHECK — run semantic check with step's prompt
@@ -522,7 +531,12 @@ function handleSource(repo, pipelineEngine, scope, agentType, artifactPath, arti
         semanticResult = runSemanticCheck(activeStep.prompt, artifactContent, artifactPath, scopeContext, false, sessionId, scope);
         writeAudit(sessionDir, scope, agentType, artifactPath, semanticResult);
         qualityCheck = semanticResult?.check ?? semanticResult?.verdict ?? null;
-        trace.span({ name: "semantic-check", input: { prompt: activeStep.prompt, }, output: { verdict: qualityCheck, }, }).end();
+        trace.span({
+            name: "semantic-check",
+            input: { prompt: activeStep.prompt, agent: agentType, artifactPath: path_1.default.basename(artifactPath), artifactSize: artifactContent.length, },
+            output: { verdict: qualityCheck, reason: semanticResult?.reason, },
+        }).end();
+        Tracing_1.Tracing.score(trace, enabled, "verdict", qualityCheck || "UNKNOWN", semanticResult?.reason);
     }
     // Source agents produce artifacts — they don't judge themselves.
     // Only verification steps (CHECK/VERIFY) determine PASS/FAIL.
@@ -541,15 +555,15 @@ function handleSource(repo, pipelineEngine, scope, agentType, artifactPath, arti
     logAction(sessionDir, nextAction, scope);
     trace.span({
         name: "engine-step",
-        input: { role: "source", artifactVerdict: finalVerdict, },
-        output: { action: nextAction && nextAction.action, },
+        input: { role: "source", agent: agentType, artifactVerdict: finalVerdict, qualityCheck, },
+        output: { action: nextAction?.action, nextAgent: nextAction?.agent, round: nextAction?.round, maxRounds: nextAction?.maxRounds, },
     }).end();
     if (finalVerdict === "FAIL") {
         const reason = semanticResult && semanticResult.reason ? semanticResult.reason : "Semantic validation failed";
         Messaging_1.Messaging.notify(sessionDir, "", `${reason}`);
     }
 }
-function handleVerifier(repo, pipelineEngine, scope, agentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir, sessionId, trace, _mcpVerdictPreExisted) {
+function handleVerifier(repo, pipelineEngine, scope, agentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir, sessionId, trace, enabled, _mcpVerdictPreExisted) {
     // Implicit semantic check for gate agents.
     // The gater (claude -p) runs here — may call gate_verdict MCP (verdict → DB)
     // or write "Result:" prose (verdict → return value). Either way, runSemanticCheck
@@ -558,7 +572,12 @@ function handleVerifier(repo, pipelineEngine, scope, agentType, artifactPath, ar
     writeAudit(sessionDir, scope, agentType, artifactPath, semanticResult);
     // Quality check: prefer MCP `check` field, fall back to semantic verdict (legacy Result: line)
     const qualityCheck = semanticResult?.check ?? semanticResult?.verdict ?? null;
-    trace.span({ name: "semantic-check", input: { prompt: "implicit-verifier-check", }, output: { verdict: qualityCheck, }, }).end();
+    trace.span({
+        name: "semantic-check",
+        input: { prompt: "implicit-verifier-check", agent: agentType, artifactPath: path_1.default.basename(artifactPath), artifactSize: artifactContent.length, },
+        output: { verdict: qualityCheck, reason: semanticResult?.reason, },
+    }).end();
+    Tracing_1.Tracing.score(trace, enabled, "verdict", qualityCheck || "UNKNOWN", semanticResult?.reason);
     // Record raw artifact verdict — engine and DB must agree on what the reviewer said.
     recordVerdict(repo, scope, agentType, artifactVerdict);
     // Semantic dispatch (hook layer, not engine):
@@ -576,9 +595,10 @@ function handleVerifier(repo, pipelineEngine, scope, agentType, artifactPath, ar
         logAction(sessionDir, retryAction, scope);
         trace.span({
             name: "engine-step",
-            input: { role: "verifier", artifactVerdict, qualityCheck, },
-            output: { action: retryAction && retryAction.action, },
+            input: { role: "verifier", agent: agentType, artifactVerdict, qualityCheck, },
+            output: { action: retryAction?.action, nextAgent: retryAction?.agent, round: retryAction?.round, maxRounds: retryAction?.maxRounds, },
         }).end();
+        Tracing_1.Tracing.score(trace, enabled, "verdict", "FAIL", "quality check failed, retrying reviewer");
         return;
     }
     const nextAction = pipelineEngine.step(scope, { role: "verifier", artifactVerdict, });
@@ -590,16 +610,24 @@ function handleVerifier(repo, pipelineEngine, scope, agentType, artifactPath, ar
         action: nextAction && nextAction.action,
     });
     logAction(sessionDir, nextAction, scope);
-    trace.span({ name: "engine-step", input: { role: "verifier", artifactVerdict, }, output: { action: nextAction && nextAction.action, }, })
-        .end();
+    trace.span({
+        name: "engine-step",
+        input: { role: "verifier", agent: agentType, artifactVerdict, qualityCheck, },
+        output: { action: nextAction?.action, nextAgent: nextAction?.agent, round: nextAction?.round, maxRounds: nextAction?.maxRounds, },
+    }).end();
 }
-function handleFixer(repo, pipelineEngine, scope, agentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir, sessionId, trace) {
+function handleFixer(repo, pipelineEngine, scope, agentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir, sessionId, trace, enabled) {
     // Implicit semantic check for fixers
     const semanticResult = runSemanticCheck("Did this fix address the revision instructions?", artifactContent, artifactPath, scopeContext, true, sessionId, scope);
     writeAudit(sessionDir, scope, agentType, artifactPath, semanticResult);
     const qualityCheck = semanticResult?.check ?? semanticResult?.verdict ?? null;
     recordVerdict(repo, scope, agentType, artifactVerdict);
-    trace.span({ name: "semantic-check", input: { prompt: "implicit-fixer-check", }, output: { verdict: qualityCheck, }, }).end();
+    trace.span({
+        name: "semantic-check",
+        input: { prompt: "implicit-fixer-check", agent: agentType, artifactPath: path_1.default.basename(artifactPath), artifactSize: artifactContent.length, },
+        output: { verdict: qualityCheck, reason: semanticResult?.reason, },
+    }).end();
+    Tracing_1.Tracing.score(trace, enabled, "verdict", qualityCheck || "UNKNOWN", semanticResult?.reason);
     // Single engine call — engine always reactivates the revision step for fixers
     const nextAction = pipelineEngine.step(scope, { role: "fixer", artifactVerdict, });
     Tracing_1.Tracing.trace(sessionDir, "engine.step", scope, {
@@ -610,10 +638,13 @@ function handleFixer(repo, pipelineEngine, scope, agentType, artifactPath, artif
         action: nextAction && nextAction.action,
     });
     logAction(sessionDir, nextAction, scope);
-    trace.span({ name: "engine-step", input: { role: "fixer", artifactVerdict, }, output: { action: nextAction && nextAction.action, }, })
-        .end();
+    trace.span({
+        name: "engine-step",
+        input: { role: "fixer", agent: agentType, artifactVerdict, qualityCheck, },
+        output: { action: nextAction?.action, nextAgent: nextAction?.agent, round: nextAction?.round, maxRounds: nextAction?.maxRounds, },
+    }).end();
 }
-function handleTransformer(repo, pipelineEngine, scope, agentType, artifactPath, sessionDir, trace) {
+function handleTransformer(repo, pipelineEngine, scope, agentType, artifactPath, sessionDir, trace, enabled) {
     // Transformers auto-pass — no verdict check, no semantic check.
     recordVerdict(repo, scope, agentType, "PASS");
     const nextAction = pipelineEngine.step(scope, { role: "transformer", artifactVerdict: "PASS", });
@@ -624,7 +655,12 @@ function handleTransformer(repo, pipelineEngine, scope, agentType, artifactPath,
         action: nextAction && nextAction.action,
     });
     logAction(sessionDir, nextAction, scope);
-    trace.span({ name: "engine-step", input: { role: "transformer", }, output: { action: nextAction && nextAction.action, }, }).end();
+    trace.span({
+        name: "engine-step",
+        input: { role: "transformer", agent: agentType, },
+        output: { action: nextAction?.action, nextAgent: nextAction?.agent, round: nextAction?.round, maxRounds: nextAction?.maxRounds, },
+    }).end();
+    Tracing_1.Tracing.score(trace, enabled, "verdict", "PASS");
 }
 // ── Logging helper ───────────────────────────────────────────────────
 function logAction(sessionDir, action, scope) {
