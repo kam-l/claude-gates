@@ -31,10 +31,11 @@ server.tool(
   {
     session_id: z.string().describe("Session UUID",),
     scope: z.string().describe("Pipeline scope or 'verify-plan' for plan-gate",),
-    verdict: z.enum(["PASS", "REVISE", "FAIL",],).describe("Verdict: PASS, REVISE, or FAIL",),
+    verdict: z.enum(["PASS", "REVISE", "FAIL",],).describe("Verdict: what the reviewed agent decided (PASS, REVISE, or FAIL)",),
+    check: z.enum(["PASS", "FAIL",],).optional().describe("Quality check: your assessment of the agent's work (PASS = thorough, FAIL = sloppy/wrong)",),
     reason: z.string().describe("Human-readable reason for the verdict",),
   },
-  async ({ session_id, scope, verdict, reason, },) =>
+  async ({ session_id, scope, verdict, check, reason, },) =>
   {
     try
     {
@@ -74,7 +75,7 @@ server.tool(
         }
 
         const agent = activeStep.agent || activeStep.source_agent;
-        repo.setVerdict(scope, agent, verdict, activeStep.round,);
+        repo.setVerdict(scope, agent, verdict, activeStep.round, check,);
 
         return {
           content: [{

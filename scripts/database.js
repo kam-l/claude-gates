@@ -82,8 +82,8 @@ function hasNonPassedSteps(db, scope) {
 function registerAgent(db, scope, agent, outputFilepath) {
     new PipelineRepository_1.PipelineRepository(db).registerAgent(scope, agent, outputFilepath);
 }
-function setVerdict(db, scope, agent, verdict, round) {
-    new PipelineRepository_1.PipelineRepository(db).setVerdict(scope, agent, verdict, round);
+function setVerdict(db, scope, agent, verdict, round, check) {
+    new PipelineRepository_1.PipelineRepository(db).setVerdict(scope, agent, verdict, round, check);
 }
 function getAgent(db, scope, agent) {
     return new PipelineRepository_1.PipelineRepository(db).getAgent(scope, agent);

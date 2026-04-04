@@ -77,9 +77,9 @@ function registerAgent(db: BetterSqlite3.Database, scope: string, agent: string,
 {
   new PipelineRepository(db,).registerAgent(scope, agent, outputFilepath,);
 }
-function setVerdict(db: BetterSqlite3.Database, scope: string, agent: string, verdict: string, round: number,): void
+function setVerdict(db: BetterSqlite3.Database, scope: string, agent: string, verdict: string, round: number, check?: string,): void
 {
-  new PipelineRepository(db,).setVerdict(scope, agent, verdict, round,);
+  new PipelineRepository(db,).setVerdict(scope, agent, verdict, round, check,);
 }
 function getAgent(db: BetterSqlite3.Database, scope: string, agent: string,): IAgentRow | null
 {

@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS agents (
   agent          TEXT NOT NULL,
   outputFilepath TEXT,
   verdict        TEXT,
+  "check"        TEXT,
   round          INTEGER,
   attempts       INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (scope, agent)
@@ -70,6 +71,11 @@ class PipelineRepository {
         db.exec(TRIGGER_SQL);
         try {
             db.exec("ALTER TABLE pipeline_state ADD COLUMN trace_id TEXT");
+        }
+        catch {
+        }
+        try {
+            db.exec('ALTER TABLE agents ADD COLUMN "check" TEXT');
         }
         catch {
         }
@@ -139,8 +145,13 @@ class PipelineRepository {
         this._db.prepare("INSERT INTO agents (scope, agent, outputFilepath) VALUES (?, ?, ?) "
             + "ON CONFLICT(scope, agent) DO UPDATE SET outputFilepath = excluded.outputFilepath").run(scope, agent, outputFilepath);
     }
-    setVerdict(scope, agent, verdict, round) {
-        this._db.prepare("UPDATE agents SET verdict = ?, round = ? WHERE scope = ? AND agent = ?").run(verdict, round, scope, agent);
+    setVerdict(scope, agent, verdict, round, check) {
+        if (check) {
+            this._db.prepare('UPDATE agents SET verdict = ?, "check" = ?, round = ? WHERE scope = ? AND agent = ?').run(verdict, check, round, scope, agent);
+        }
+        else {
+            this._db.prepare("UPDATE agents SET verdict = ?, round = ? WHERE scope = ? AND agent = ?").run(verdict, round, scope, agent);
+        }
     }
     getAgent(scope, agent) {
         return this._db.prepare("SELECT * FROM agents WHERE scope = ? AND agent = ?").get(scope, agent) || null;

@@ -315,6 +315,25 @@ test("registerAgent + getAgent + setVerdict", () => {
         assert_1.default.strictEqual(agent.round, 1);
     });
 });
+test("setVerdict with check param records both verdict and check", () => {
+    withDb((db) => {
+        crud.registerAgent(db, "chk-scope", "reviewer", "/path.md");
+        crud.setVerdict(db, "chk-scope", "reviewer", "PASS", 1, "FAIL");
+        const agent = crud.getAgent(db, "chk-scope", "reviewer");
+        assert_1.default.strictEqual(agent.verdict, "PASS", "verdict should be PASS");
+        assert_1.default.strictEqual(agent.check, "FAIL", "check should be FAIL");
+        assert_1.default.strictEqual(agent.round, 1);
+    });
+});
+test("setVerdict without check param leaves check null", () => {
+    withDb((db) => {
+        crud.registerAgent(db, "nochk", "worker", "/path.md");
+        crud.setVerdict(db, "nochk", "worker", "REVISE", 2);
+        const agent = crud.getAgent(db, "nochk", "worker");
+        assert_1.default.strictEqual(agent.verdict, "REVISE");
+        assert_1.default.strictEqual(agent.check, null, "check should be null when not provided");
+    });
+});
 // ══════════════════════════════════════════════════════════════════════
 // pipeline.js — engine tests
 // ══════════════════════════════════════════════════════════════════════

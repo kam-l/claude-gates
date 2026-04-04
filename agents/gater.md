@@ -41,13 +41,20 @@ For plans and decisions, also apply:
 Call the `gate_verdict` tool with your verdict. Parameters:
 - `session_id` — from your context (`session_id=...`)
 - `scope` — from your context (`scope=...`)
-- `verdict` — one of: `PASS`, `REVISE`, `FAIL`
+- `verdict` — what the reviewed agent decided: `PASS`, `REVISE`, or `FAIL`
+- `check` — your quality assessment of the agent's work: `PASS` (thorough) or `FAIL` (sloppy/wrong)
 - `reason` — one-sentence summary of why
 
+**How to set verdict + check by context:**
+- **Artifact review** (`role=gate`): `verdict` = the reviewer's own verdict (PASS/REVISE/FAIL from their Result: line). `check` = your assessment of whether the review is thorough and correct.
+- **CHECK step** (no `role=gate`, you're judging a source artifact directly): `verdict` = PASS. `check` = your assessment of the artifact quality.
+- **Conditions pre-check**: `verdict` = PASS or FAIL. `check` is optional.
+- **Plan verification** (`scope=verify-plan`): `verdict` = your verdict. `check` is optional.
+
 Rules:
-- CRITICAL or HIGH findings → `REVISE`. Only MEDIUM/LOW → `PASS`. Genuinely solid → `PASS`.
-- `FAIL` — conditions not met (conditions pre-check only).
-- Re-review found no significant new issues → `PASS` (formerly CONVERGED).
+- CRITICAL or HIGH findings → `check: FAIL`. Only MEDIUM/LOW → `check: PASS`. Genuinely solid → `check: PASS`.
+- `verdict: FAIL` — conditions not met (conditions pre-check only).
+- Re-review found no significant new issues → `check: PASS` (formerly CONVERGED).
 - If `gate_verdict` returns an error, retry once. If it fails again, fall back to writing `Result: PASS/REVISE/FAIL` as the last line of your response.
 
 ## Findings Format

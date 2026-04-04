@@ -155,7 +155,7 @@ function runSemanticCheck(
   isReview: boolean,
   sessionId?: string,
   scope?: string,
-): { verdict: string; reason: string; fullResponse: string; } | null
+): { verdict: string; check: string | null; reason: string; fullResponse: string; } | null
 {
   let combinedPrompt = prompt + "\n\n";
   if (isReview)
@@ -211,7 +211,7 @@ function runSemanticCheck(
     {
       const raw = match[1].toUpperCase();
       const verdict = (raw === "PASS" || raw === "CONVERGED") ? "PASS" : "FAIL";
-      return { verdict, reason: match[2] ? match[2].trim() : "", fullResponse: result, };
+      return { verdict, check: null, reason: match[2] ? match[2].trim() : "", fullResponse: result, };
     }
 
     // No Result: line — gater may have used gate_verdict MCP instead.
@@ -234,8 +234,9 @@ function runSemanticCheck(
             {
               const raw = agentRow.verdict.toUpperCase();
               const verdict = (raw === "PASS" || raw === "CONVERGED") ? "PASS" : "FAIL";
-              process.stderr.write(`[ClaudeGates] MCP verdict from DB: ${verdict} (agent=${agent})\n`,);
-              return { verdict, reason: "via gate_verdict MCP", fullResponse: result, };
+              const check = agentRow.check ? agentRow.check.toUpperCase() : null;
+              process.stderr.write(`[ClaudeGates] MCP verdict from DB: ${verdict}, check=${check || "N/A"} (agent=${agent})\n`,);
+              return { verdict, check, reason: "via gate_verdict MCP", fullResponse: result, };
             }
           }
         }
@@ -271,7 +272,7 @@ function writeAudit(
   scope: string | null,
   agentType: string,
   artifactPath: string,
-  semanticResult: { verdict: string; reason: string; fullResponse: string; } | null,
+  semanticResult: { verdict: string; check: string | null; reason: string; fullResponse: string; } | null,
 )
 {
   try
@@ -702,21 +703,21 @@ function handleSource(
 
   // Check if active step is CHECK — run semantic check with step's prompt
   const activeStep = repo.getActiveStep(scope,);
-  let semanticVerdict: string | null = null;
-  let semanticResult: { verdict: string; reason: string; fullResponse: string; } | null = null;
+  let qualityCheck: string | null = null;
+  let semanticResult: { verdict: string; check: string | null; reason: string; fullResponse: string; } | null = null;
 
   if (activeStep && activeStep.step_type === StepType.Check && activeStep.prompt)
   {
     semanticResult = runSemanticCheck(activeStep.prompt, artifactContent, artifactPath, scopeContext, false, sessionId, scope,);
     writeAudit(sessionDir, scope, agentType, artifactPath, semanticResult,);
-    semanticVerdict = semanticResult ? semanticResult.verdict : null;
-    trace.span({ name: "semantic-check", input: { prompt: activeStep.prompt, }, output: { verdict: semanticVerdict, }, },).end();
+    qualityCheck = semanticResult?.check ?? semanticResult?.verdict ?? null;
+    trace.span({ name: "semantic-check", input: { prompt: activeStep.prompt, }, output: { verdict: qualityCheck, }, },).end();
   }
 
   // Source agents produce artifacts — they don't judge themselves.
-  // Only verification steps CHECK/VERIFY) determine PASS/FAIL.
+  // Only verification steps (CHECK/VERIFY) determine PASS/FAIL.
   // Source Result: line is recorded but doesn't drive pipeline flow.
-  const finalVerdict = (semanticVerdict === "FAIL") ? "FAIL" : "PASS";
+  const finalVerdict = (qualityCheck === "FAIL") ? "FAIL" : "PASS";
   recordVerdict(repo, scope, agentType, finalVerdict,);
 
   // Engine call — for normal state, processes verdict on active step
@@ -725,7 +726,7 @@ function handleSource(
     agent: agentType,
     role: "source",
     verdict: finalVerdict,
-    semanticVerdict,
+    qualityCheck,
     action: nextAction && nextAction.action,
   },);
   logAction(sessionDir, nextAction, scope,);
@@ -772,29 +773,30 @@ function handleVerifier(
   );
   writeAudit(sessionDir, scope, agentType, artifactPath, semanticResult,);
 
-  const semanticVerdict = semanticResult ? semanticResult.verdict : null;
-  trace.span({ name: "semantic-check", input: { prompt: "implicit-verifier-check", }, output: { verdict: semanticVerdict, }, },).end();
+  // Quality check: prefer MCP `check` field, fall back to semantic verdict (legacy Result: line)
+  const qualityCheck = semanticResult?.check ?? semanticResult?.verdict ?? null;
+  trace.span({ name: "semantic-check", input: { prompt: "implicit-verifier-check", }, output: { verdict: qualityCheck, }, },).end();
 
   // Record raw artifact verdict — engine and DB must agree on what the reviewer said.
   recordVerdict(repo, scope, agentType, artifactVerdict,);
 
   // Semantic dispatch (hook layer, not engine):
-  // If gater says FAIL and reviewer didn't say REVISE → retry reviewer via retryGateAgent.
+  // If gater quality check says FAIL and reviewer didn't say REVISE → retry reviewer via retryGateAgent.
   // Otherwise → normal engine.step with artifact verdict.
-  if (semanticVerdict === "FAIL" && artifactVerdict.toUpperCase().trim() !== "REVISE")
+  if (qualityCheck === "FAIL" && artifactVerdict.toUpperCase().trim() !== "REVISE")
   {
     const retryAction = pipelineEngine.retryGateAgent(scope,);
     Tracing.trace(sessionDir, "engine.retryGateAgent", scope, {
       agent: agentType,
       role: "verifier",
       verdict: artifactVerdict,
-      semanticVerdict,
+      qualityCheck,
       action: retryAction && retryAction.action,
     },);
     logAction(sessionDir, retryAction, scope,);
     trace.span({
       name: "engine-step",
-      input: { role: "verifier", artifactVerdict, semanticVerdict, },
+      input: { role: "verifier", artifactVerdict, qualityCheck, },
       output: { action: retryAction && retryAction.action, },
     },).end();
     return;
@@ -805,7 +807,7 @@ function handleVerifier(
     agent: agentType,
     role: "verifier",
     verdict: artifactVerdict,
-    semanticVerdict,
+    qualityCheck,
     action: nextAction && nextAction.action,
   },);
   logAction(sessionDir, nextAction, scope,);
@@ -839,9 +841,9 @@ function handleFixer(
   );
   writeAudit(sessionDir, scope, agentType, artifactPath, semanticResult,);
 
-  const semanticVerdict = semanticResult ? semanticResult.verdict : null;
+  const qualityCheck = semanticResult?.check ?? semanticResult?.verdict ?? null;
   recordVerdict(repo, scope, agentType, artifactVerdict,);
-  trace.span({ name: "semantic-check", input: { prompt: "implicit-fixer-check", }, output: { verdict: semanticVerdict, }, },).end();
+  trace.span({ name: "semantic-check", input: { prompt: "implicit-fixer-check", }, output: { verdict: qualityCheck, }, },).end();
 
   // Single engine call — engine always reactivates the revision step for fixers
   const nextAction = pipelineEngine.step(scope, { role: "fixer", artifactVerdict, },);
@@ -849,7 +851,7 @@ function handleFixer(
     agent: agentType,
     role: "fixer",
     verdict: artifactVerdict,
-    semanticVerdict,
+    qualityCheck,
     action: nextAction && nextAction.action,
   },);
   logAction(sessionDir, nextAction, scope,);

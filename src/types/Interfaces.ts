@@ -72,6 +72,7 @@ export interface IAgentRow
   agent: string;
   outputFilepath: string | null;
   verdict: string | null;
+  check: string | null;
   round: number | null;
   attempts: number;
 }

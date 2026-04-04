@@ -26,9 +26,10 @@ const server = new mcp_js_1.McpServer({
 server.tool("gate_verdict", {
     session_id: zod_1.z.string().describe("Session UUID"),
     scope: zod_1.z.string().describe("Pipeline scope or 'verify-plan' for plan-gate"),
-    verdict: zod_1.z.enum(["PASS", "REVISE", "FAIL",]).describe("Verdict: PASS, REVISE, or FAIL"),
+    verdict: zod_1.z.enum(["PASS", "REVISE", "FAIL",]).describe("Verdict: what the reviewed agent decided (PASS, REVISE, or FAIL)"),
+    check: zod_1.z.enum(["PASS", "FAIL",]).optional().describe("Quality check: your assessment of the agent's work (PASS = thorough, FAIL = sloppy/wrong)"),
     reason: zod_1.z.string().describe("Human-readable reason for the verdict"),
-}, async ({ session_id, scope, verdict, reason, }) => {
+}, async ({ session_id, scope, verdict, check, reason, }) => {
     try {
         const sessionDir = SessionManager_1.SessionManager.getSessionDir(session_id);
         // Plan-gate scope — writes to agents table where plan-gate.ts reads gater verdicts
@@ -58,7 +59,7 @@ server.tool("gate_verdict", {
                 };
             }
             const agent = activeStep.agent || activeStep.source_agent;
-            repo.setVerdict(scope, agent, verdict, activeStep.round);
+            repo.setVerdict(scope, agent, verdict, activeStep.round, check);
             return {
                 content: [{
                         type: "text",

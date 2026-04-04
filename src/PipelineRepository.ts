@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS agents (
   agent          TEXT NOT NULL,
   outputFilepath TEXT,
   verdict        TEXT,
+  "check"        TEXT,
   round          INTEGER,
   attempts       INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (scope, agent)
@@ -78,6 +79,13 @@ export class PipelineRepository
     try
     {
       db.exec("ALTER TABLE pipeline_state ADD COLUMN trace_id TEXT",);
+    }
+    catch
+    {
+    }
+    try
+    {
+      db.exec('ALTER TABLE agents ADD COLUMN "check" TEXT',);
     }
     catch
     {
@@ -218,11 +226,20 @@ export class PipelineRepository
     ).run(scope, agent, outputFilepath,);
   }
 
-  public setVerdict(scope: string, agent: string, verdict: string, round: number,): void
+  public setVerdict(scope: string, agent: string, verdict: string, round: number, check?: string,): void
   {
-    this._db.prepare(
-      "UPDATE agents SET verdict = ?, round = ? WHERE scope = ? AND agent = ?",
-    ).run(verdict, round, scope, agent,);
+    if (check)
+    {
+      this._db.prepare(
+        'UPDATE agents SET verdict = ?, "check" = ?, round = ? WHERE scope = ? AND agent = ?',
+      ).run(verdict, check, round, scope, agent,);
+    }
+    else
+    {
+      this._db.prepare(
+        "UPDATE agents SET verdict = ?, round = ? WHERE scope = ? AND agent = ?",
+      ).run(verdict, round, scope, agent,);
+    }
   }
 
   public getAgent(scope: string, agent: string,): IAgentRow | null
