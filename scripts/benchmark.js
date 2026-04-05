@@ -149,4 +149,4 @@ console.log();
 // Cleanup
 db.close();
 fs_1.default.rmSync(tmpDir, { recursive: true, force: true, });
-//# sourceMappingURL=Benchmark.js.map
+//# sourceMappingURL=benchmark.js.map
