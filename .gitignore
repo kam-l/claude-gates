@@ -8,5 +8,8 @@ scripts-backup/
 .sessions/
 exported-sessions/
 .claude/agent-memory/
+.claude/artifacts/
+.claude/settings.local.json
 .claude/research/
+.research/
 coverage/
