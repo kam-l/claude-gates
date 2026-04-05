@@ -1,9 +1,9 @@
 name: Tests
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
-    branches: [master]
+    branches: [main]
 
 jobs:
   test:
@@ -16,8 +16,8 @@ jobs:
       - run: npm install
       - run: npm run build
       - run: git diff --exit-code scripts/
-      - run: npx c8 --reporter=text --reporter=lcov node scripts/pipeline-test.js
-      - run: npx c8 --reporter=text --reporter=lcov --clean=false node scripts/test-pipeline-e2e.js
+      - run: npx c8 --reporter=text --reporter=lcov node scripts/PipelineTest.js
+      - run: npx c8 --reporter=text --reporter=lcov --clean=false node scripts/PipelineE2eTest.js
       - uses: codecov/codecov-action@v4
         with:
           files: coverage/lcov.info
