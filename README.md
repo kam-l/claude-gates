@@ -1,6 +1,6 @@
 # claude-gates
 
-Quality gates for Claude Code agents. Your agents shall not pass without earning it.
+Adversarial quality gates and pipelines for multi-agent orchestration. Your agents shall not pass without earning it.
 
 <p align="center">
   <a href="https://code.claude.com/docs/en/plugins"><img src="https://img.shields.io/badge/Claude_Code-plugin-blueviolet" alt="Claude Code plugin" /></a>
@@ -60,16 +60,18 @@ Then I created my own harness: wrote precise instructions, minimized context usa
 
 ## Gates
 
+- Are togglable: write `gates off` or `gates on` to toggle
 - All gates are **fail-open** — if something breaks, your work continues unblocked.
 - All have **max retries** - default 2. 
 - All are customizable by `/claude-gates:setup`. 
 
 | Gate | Hook | What it does |
 |------|------|-------------|
+| **Plan** | `PreToolUse:ExitPlanMode` | Blocks unreviewed plans (>20 lines) until gater returns PASS. Auto-allows after 3 attempts. **Works by default, no setup needed.** |
 | **Conditions** | `PreToolUse:Agent` | Gater evaluates spawn prompt against `conditions:` field. FAIL blocks the spawn - orchestrator must correct it and try spawning again. |
 | **Verification** | `SubagentStop` | Subagent is forced to summarize its work in a file. Separate Sonnet agent then verifies this file. |
 | **Pipeline** | `PreToolUse` | Sequential reviewers from `verification:` field. Each must PASS before the next runs. Orchestrator MUST spawn them in order. |
-| **Plan** | `PreToolUse:ExitPlanMode` | Blocks unreviewed plans (>20 lines) until gater returns PASS. Auto-allows after 3 attempts. |
+
 
 - **Hook-level enforcement** — gates are Claude Code hooks (`PreToolUse`, `SubagentStop`, `Stop`), not prompt instructions. They block tool calls via exit codes, not suggestions.
 - **MCP sidecar** - state machine engine lives in MCP, safely separated from orchestrator who can't cheat his way through.
