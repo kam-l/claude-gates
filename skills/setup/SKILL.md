@@ -11,7 +11,7 @@ AskUserQuestion-driven. Every step teaches a gate concept, then asks how to adap
 - **Frontmatter fields**: `verification:` (unified step array — `["prompt"]`, `[agent, N]`, `[agent, N, fixer]`, `[/cmd, Tool1]`), `conditions:` (block scalar — spawn check).
 - **Scopes**: agents spawned with `scope=<name>` in prompt. Parallel scopes are isolated.
 - **Gater**: `claude-gates:gater` — read-only evaluator. Verdicts: `Result: PASS`, `REVISE`, `CONVERGED`, `FAIL`.
-- **Hooks**: `pipeline-conditions.js` (PreToolUse:Agent), `pipeline-injection.js` (SubagentStart), `pipeline-verification.js` (SubagentStop), `pipeline-block.js` (PreToolUse:*), `plan-gate.js` (PreToolUse:ExitPlanMode), `plan-gate-clear.js` (PostToolUse:ExitPlanMode).
+- **Hooks**: `PipelineConditions.js` (PreToolUse:Agent), `PipelineInjection.js` (SubagentStart), `PipelineVerification.js` (SubagentStop), `PipelineBlock.js` (PreToolUse:*), `PlanGate.js` (PreToolUse:ExitPlanMode), `PlanGateClear.js` (PostToolUse:ExitPlanMode).
 - **Dependency**: `better-sqlite3` native module — auto-installed via SessionStart hook.
 
 ## Routing

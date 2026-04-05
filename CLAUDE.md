@@ -11,7 +11,7 @@ Declarative pipeline gates — `verification:` unified array format in agent fro
 ## Build / Test
 
 ```bash
-node scripts/PipelineTest.js           # 110 unit/integration tests
+node scripts/PipelineTest.js           # 126 unit/integration tests
 node scripts/PipelineE2eTest.js       # 28 end-to-end tests
 ```
 
@@ -67,6 +67,7 @@ src/
   FrontmatterParser.ts        # Static — extractFrontmatter, parseVerification, parseConditions
   Messaging.ts                # Static — block, info, notify, log
   Tracing.ts                  # Static — Langfuse + audit.jsonl
+  GateToggle.ts                # Hook: UserPromptSubmit — gate on/off/status toggle
   SessionContext.ts            # Hook: SessionStart — injects session context
   PipelineVerification.ts     # Hook: SubagentStop — role dispatch + semantic checks
   PipelineBlock.ts            # Hook: PreToolUse — blocks tools while pipeline active

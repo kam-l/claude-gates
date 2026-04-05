@@ -52,59 +52,62 @@ export class PipelineEngine
 
   public step(scope: string, input: string | IStepInput,): Action
   {
-    const { role, artifactVerdict, } = this.normalizeInput(input,);
-
-    const state = this._repo.getPipelineState(scope,);
-    if (!state || state.status === PipelineStatus.Completed || state.status === PipelineStatus.Failed)
+    return this._repo.transaction(() =>
     {
-      return null;
-    }
+      const { role, artifactVerdict, } = this.normalizeInput(input,);
 
-    if (role === AgentRole.Fixer)
-    {
-      return this.reactivateRevisionStep(scope,);
-    }
+      const state = this._repo.getPipelineState(scope,);
+      if (!state || state.status === PipelineStatus.Completed || state.status === PipelineStatus.Failed)
+      {
+        return null;
+      }
 
-    if (role === AgentRole.Source && state.status === PipelineStatus.Revision)
-    {
-      return this.reactivateRevisionStep(scope,);
-    }
+      if (role === AgentRole.Fixer)
+      {
+        return this.reactivateRevisionStep(scope,);
+      }
 
-    const activeStep = this._repo.getActiveStep(scope,);
-    if (!activeStep)
-    {
-      return null;
-    }
+      if (role === AgentRole.Source && state.status === PipelineStatus.Revision)
+      {
+        return this.reactivateRevisionStep(scope,);
+      }
 
-    if (
-      activeStep.step_type === StepType.Transform
-      && (role === AgentRole.Transformer || role === AgentRole.Source || role === AgentRole.Fixer)
-    )
-    {
+      const activeStep = this._repo.getActiveStep(scope,);
+      if (!activeStep)
+      {
+        return null;
+      }
+
+      if (
+        activeStep.step_type === StepType.Transform
+        && (role === AgentRole.Transformer || role === AgentRole.Source || role === AgentRole.Fixer)
+      )
+      {
+        return this.advance(scope, activeStep,);
+      }
+
+      if (role === AgentRole.Source && activeStep.step_type !== StepType.Check)
+      {
+        return this.buildAction(scope,);
+      }
+
+      const v = this.normalizeVerdict(artifactVerdict,);
+
+      if (v === Verdict.Pass)
+      {
+        return this.advance(scope, activeStep,);
+      }
+
+      if (v === Verdict.Revise)
+      {
+        return this.revise(scope, state, activeStep,);
+      }
+
+      process.stderr.write(
+        `[ClaudeGates] ⚠️ Unknown verdict "${artifactVerdict}" for scope="${scope}" step ${activeStep.step_index}. Treating as PASS.\n`,
+      );
       return this.advance(scope, activeStep,);
-    }
-
-    if (role === AgentRole.Source && activeStep.step_type !== StepType.Check)
-    {
-      return this.buildAction(scope,);
-    }
-
-    const v = this.normalizeVerdict(artifactVerdict,);
-
-    if (v === Verdict.Pass)
-    {
-      return this.advance(scope, activeStep,);
-    }
-
-    if (v === Verdict.Revise)
-    {
-      return this.revise(scope, state, activeStep,);
-    }
-
-    process.stderr.write(
-      `[ClaudeGates] ⚠️ Unknown verdict "${artifactVerdict}" for scope="${scope}" step ${activeStep.step_index}. Treating as PASS.\n`,
-    );
-    return this.advance(scope, activeStep,);
+    },);
   }
 
   // ── Action query ───────────────────────────────────────────────────
@@ -136,7 +139,11 @@ export class PipelineEngine
     if (!scope)
     {
       const pipelines = this._repo.getActivePipelines();
-      for (const p of pipelines)
+      // Prefer pipelines in revision state (fixer/verifier most likely expected there)
+      const sorted = [...pipelines,].sort((a, b,) =>
+        (a.status === PipelineStatus.Revision ? 0 : 1) - (b.status === PipelineStatus.Revision ? 0 : 1)
+      );
+      for (const p of sorted)
       {
         const role = this.resolveRoleInScope(p.scope, agentType, p.source_agent,);
         if (role !== AgentRole.Ungated)
@@ -160,26 +167,26 @@ export class PipelineEngine
    */
   public retryGateAgent(scope: string,): Action
   {
-    const activeStep = this._repo.getActiveStep(scope,);
-    if (!activeStep)
+    return this._repo.transaction(() =>
     {
-      return null;
-    }
+      const activeStep = this._repo.getActiveStep(scope,);
+      if (!activeStep)
+      {
+        return null;
+      }
 
-    const newRound = activeStep.round + 1;
+      const newRound = activeStep.round + 1;
 
-    if (newRound > activeStep.max_rounds)
-    {
-      this._repo.transaction(() =>
+      if (newRound > activeStep.max_rounds)
       {
         this._repo.updateStepStatus(scope, activeStep.step_index, StepStatus.Failed, newRound,);
         this._repo.updatePipelineState(scope, { status: PipelineStatus.Failed, },);
-      },);
-      return { action: "failed", scope, step: activeStep, round: newRound, maxRounds: activeStep.max_rounds, };
-    }
+        return { action: "failed", scope, step: activeStep, round: newRound, maxRounds: activeStep.max_rounds, };
+      }
 
-    this._repo.updateStepStatus(scope, activeStep.step_index, StepStatus.Active, newRound,);
-    return this.buildAction(scope,);
+      this._repo.updateStepStatus(scope, activeStep.step_index, StepStatus.Active, newRound,);
+      return this.buildAction(scope,);
+    },);
   }
 
   // ── Internal: input normalization ──────────────────────────────────
@@ -265,7 +272,8 @@ export class PipelineEngine
     },);
 
     const agent = hasFixer ? activeStep.fixer! : state.source_agent;
-    return { action: "source", agent, scope, step: activeStep, };
+    const freshStep = this._repo.getStep(scope, activeStep.step_index,) || activeStep;
+    return { action: "source", agent, scope, step: freshStep, };
   }
 
   private reactivateRevisionStep(scope: string,): Action

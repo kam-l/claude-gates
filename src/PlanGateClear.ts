@@ -16,6 +16,11 @@ try
 {
   const data: any = JSON.parse(fs.readFileSync(0, "utf-8",),);
 
+  if (SessionManager.isGateDisabled())
+  {
+    process.exit(0,);
+  }
+
   const sessionId = data.session_id || "";
   if (!sessionId)
   {

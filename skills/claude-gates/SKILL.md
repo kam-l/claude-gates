@@ -27,11 +27,11 @@ Spawn with `scope=<name>`: `Agent({ subagent_type: "implementer", prompt: "scope
 
 ## Pipeline Lifecycle
 
-1. **PreToolUse:Agent** (`pipeline-conditions.js`) — conditions check + step enforcement + scope registration
-2. **SubagentStart** (`pipeline-injection.js`) — creates pipeline, injects role context for verifiers/fixers (no output structure)
+1. **PreToolUse:Agent** (`PipelineConditions.js`) — conditions check + step enforcement + scope registration
+2. **SubagentStart** (`PipelineInjection.js`) — creates pipeline, injects role context for verifiers/fixers (no output structure)
 3. **Agent runs** — thinks freely, no format constraints. Source agents on revision get artifact path to update.
-4. **SubagentStop** (`pipeline-verification.js`) — pivots agent to write artifact → scope → role → semantic check → `engine.step()`
-5. **PreToolUse** (`pipeline-block.js`) — blocks tools while steps pending, forces expected agent spawns
+4. **SubagentStop** (`PipelineVerification.js`) — pivots agent to write artifact → scope → role → semantic check → `engine.step()`
+5. **PreToolUse** (`PipelineBlock.js`) — blocks tools while steps pending, forces expected agent spawns
 
 ## Step Types
 

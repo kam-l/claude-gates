@@ -25,6 +25,11 @@ const MAX_ATTEMPTS = 3;
 
 export function onExitPlanMode(data: any,): void
 {
+  if (SessionManager.isGateDisabled())
+  {
+    process.exit(0,);
+  }
+
   const sessionId = data.session_id || "";
   if (!sessionId)
   {
@@ -36,11 +41,11 @@ export function onExitPlanMode(data: any,): void
   const plansDir = path.join(HOME, ".claude", "plans",);
 
   // ── Check for gater verdict (SQLite) ──
-  const db = GateRepository.createDb(sessionDir,);
   let gaterVerified = false;
-
+  let db: ReturnType<typeof GateRepository.createDb> | null = null;
   try
   {
+    db = GateRepository.createDb(sessionDir,);
     const row = db.prepare(
       "SELECT 1 FROM agents WHERE agent = 'gater' AND verdict IN ('PASS','CONVERGED') LIMIT 1",
     ).get();
@@ -49,7 +54,11 @@ export function onExitPlanMode(data: any,): void
   catch
   {
   }
-  db.close();
+  finally
+  {
+    db?.close();
+    db = null;
+  }
 
   if (gaterVerified)
   {
@@ -83,18 +92,28 @@ export function onExitPlanMode(data: any,): void
   }
 
   // ── Attempt tracking — auto-allow after MAX_ATTEMPTS ──
-  const db2 = GateRepository.createDb(sessionDir,);
-  const gateRepo = new GateRepository(db2,);
-  gateRepo.incrAttempts("_system", "plan-gate",);
-  const attempts = gateRepo.getAttempts("_system", "plan-gate",);
-  if (attempts >= MAX_ATTEMPTS)
+  let safetyValve = false;
+  try
   {
-    gateRepo.resetAttempts("_system", "plan-gate",);
-    db2.close();
+    db = GateRepository.createDb(sessionDir,);
+    const gateRepo = new GateRepository(db,);
+    gateRepo.incrAttempts("_system", "plan-gate",);
+    const attempts = gateRepo.getAttempts("_system", "plan-gate",);
+    if (attempts >= MAX_ATTEMPTS)
+    {
+      gateRepo.resetAttempts("_system", "plan-gate",);
+      safetyValve = true;
+    }
+  }
+  finally
+  {
+    db?.close();
+  }
+  if (safetyValve)
+  {
     process.stderr.write(`[ClaudeGates] ⚠️ Safety valve activated.\n`,);
     process.exit(0,);
   }
-  db2.close();
 
   // ── Block ──
   const reason = `[ClaudeGates] 🔐 "${planFiles[0].name}" (${lines} lines) unverified. Spawn claude-gates:gater with scope=verify-plan.`;

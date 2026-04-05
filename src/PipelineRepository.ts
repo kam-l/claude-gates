@@ -85,7 +85,7 @@ export class PipelineRepository
     }
     try
     {
-      db.exec('ALTER TABLE agents ADD COLUMN "check" TEXT',);
+      db.exec("ALTER TABLE agents ADD COLUMN \"check\" TEXT",);
     }
     catch
     {
@@ -231,7 +231,7 @@ export class PipelineRepository
     if (check)
     {
       this._db.prepare(
-        'UPDATE agents SET verdict = ?, "check" = ?, round = ? WHERE scope = ? AND agent = ?',
+        "UPDATE agents SET verdict = ?, \"check\" = ?, round = ? WHERE scope = ? AND agent = ?",
       ).run(verdict, check, round, scope, agent,);
     }
     else
@@ -254,8 +254,16 @@ export class PipelineRepository
 
   public findAgentScope(agent: string,): string | null
   {
+    // Prefer scope with an active pipeline (handles same-agent-name in multiple scopes)
     const row = this._db.prepare(
-      "SELECT scope FROM agents WHERE agent = ? AND scope != '_meta' AND scope != '_pending' ORDER BY verdict IS NULL DESC, rowid DESC LIMIT 1",
+      `SELECT a.scope FROM agents a
+       LEFT JOIN pipeline_state p ON a.scope = p.scope
+       WHERE a.agent = ? AND a.scope != '_meta' AND a.scope != '_pending'
+       ORDER BY
+         (CASE WHEN p.status IN ('normal','revision') THEN 0 ELSE 1 END),
+         a.verdict IS NULL DESC,
+         a.rowid DESC
+       LIMIT 1`,
     ).get(agent,) as { scope: string; } | undefined;
     return row ? row.scope : null;
   }

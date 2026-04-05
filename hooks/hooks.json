@@ -75,6 +75,17 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/GateToggle.js",
+            "timeout": 2000
+          }
+        ]
+      }
+    ],
     "SubagentStop": [
       {
         "hooks": [

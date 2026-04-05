@@ -17,6 +17,9 @@ const GateRepository_1 = require("./GateRepository");
 const SessionManager_1 = require("./SessionManager");
 try {
     const data = JSON.parse(fs_1.default.readFileSync(0, "utf-8"));
+    if (SessionManager_1.SessionManager.isGateDisabled()) {
+        process.exit(0);
+    }
     const sessionId = data.session_id || "";
     if (!sessionId) {
         process.exit(0);
