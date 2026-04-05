@@ -33,6 +33,11 @@ const PROJECT_ROOT = process.cwd();
 
 export function onConditionsCheck(data: any,): void
 {
+  if (SessionManager.isGateDisabled())
+  {
+    process.exit(0,);
+  }
+
   // PreToolUse:Agent provides tool_input with prompt and subagent_type
   const toolInput = data.tool_input || {};
   const agentType = toolInput.subagent_type || "";
@@ -132,12 +137,13 @@ export function onConditionsCheck(data: any,): void
   }
 
   // ── Step enforcement via engine ──
-  const db = SessionManager.openDatabase(sessionDir,);
-  PipelineRepository.initSchema(db,);
-  const repo = new PipelineRepository(db,);
-  const pipelineEngine = new PipelineEngine(repo,);
+  let db: ReturnType<typeof SessionManager.openDatabase> | null = null;
   try
   {
+    db = SessionManager.openDatabase(sessionDir,);
+    PipelineRepository.initSchema(db,);
+    const repo = new PipelineRepository(db,);
+    const pipelineEngine = new PipelineEngine(repo,);
     const actions = pipelineEngine.getAllNextActions();
 
     if (actions && actions.length > 0)
@@ -153,7 +159,6 @@ export function onConditionsCheck(data: any,): void
           if (scopeAction.agent !== bareAgentType)
           {
             Messaging.block("🔏", `Scope "${scope}" expects "${scopeAction.agent}", not "${bareAgentType}". Spawn ${scopeAction.agent}.`,);
-            db.close();
             process.exit(0,);
           }
         }
@@ -210,7 +215,7 @@ export function onConditionsCheck(data: any,): void
   }
   finally
   {
-    db.close();
+    db?.close();
   }
 
   // Allow

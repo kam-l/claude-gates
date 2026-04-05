@@ -42,6 +42,9 @@ function sourceReason(act) {
     return ".";
 }
 async function onPreToolUse(data) {
+    if (SessionManager_1.SessionManager.isGateDisabled()) {
+        process.exit(0);
+    }
     const sessionId = data.session_id || "";
     if (!sessionId) {
         process.exit(0);
@@ -53,16 +56,11 @@ async function onPreToolUse(data) {
     const sessionDir = SessionManager_1.SessionManager.getSessionDir(sessionId);
     // Surface queued notifications from SubagentStop (side-channel)
     const pending = Messaging_1.Messaging.drainNotifications(sessionDir);
-    const db = SessionManager_1.SessionManager.openDatabase(sessionDir);
-    if (!db) {
-        if (pending) {
-            Messaging_1.Messaging.info("", pending.replace(/\[ClaudeGates\] /g, ""));
-        }
-        process.exit(0);
-    }
-    PipelineRepository_1.PipelineRepository.initSchema(db);
     let actions;
+    let db = null;
     try {
+        db = SessionManager_1.SessionManager.openDatabase(sessionDir);
+        PipelineRepository_1.PipelineRepository.initSchema(db);
         const repo = new PipelineRepository_1.PipelineRepository(db);
         const pipelineEngine = new PipelineEngine_1.PipelineEngine(repo);
         actions = pipelineEngine.getAllNextActions();
@@ -70,7 +68,7 @@ async function onPreToolUse(data) {
         traceScopes = {};
     }
     finally {
-        db.close();
+        db?.close();
     }
     // No active pipeline — surface any pending notifications and allow
     if (!actions || actions.length === 0) {
@@ -88,8 +86,8 @@ async function onPreToolUse(data) {
         process.exit(0);
     }
     // /unblock is user-invocable-only (model can't see it) — no Skill allowlist needed
-    // Build expected agents
-    const expectedAgents = new Map();
+    // Build expected agent names — Set avoids collisions when multiple scopes use the same agent name
+    const expectedAgentNames = new Set();
     let hasBlockingActions = false;
     for (const act of actions) {
         if (act.action === "spawn" || act.action === "source" || act.action === "semantic") {
@@ -103,7 +101,7 @@ async function onPreToolUse(data) {
             }
             const agent = act.agent || (act.step && act.step.source_agent);
             if (agent) {
-                expectedAgents.set(agent, { scope: act.scope, action: act, });
+                expectedAgentNames.add(agent);
             }
             hasBlockingActions = true;
         }
@@ -118,10 +116,10 @@ async function onPreToolUse(data) {
             process.exit(0);
         }
     }
-    // Agent tool: allow expected agents
+    // Agent tool: allow expected agents (any scope expecting this agent name)
     if (toolName === "Agent") {
         const subagentType = toolInput.subagent_type || "";
-        if (expectedAgents.has(subagentType)) {
+        if (expectedAgentNames.has(subagentType)) {
             process.exit(0);
         }
     }

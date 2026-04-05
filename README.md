@@ -153,18 +153,18 @@ Throughout all of this, Claude (the orchestrator) never sees the gate machinery.
 ```
 hooks.json
   │
-  ├─ SessionStart ──→ session-cleanup.js (sweep old sessions)
+  ├─ SessionStart ──→ SessionCleanup.js (sweep old sessions)
   │                   npm install (better-sqlite3 into CLAUDE_PLUGIN_DATA)
   │
-  ├─ PreToolUse ────→ pipeline-block.js      (block tools while pipeline active)
-  │                   pipeline-conditions.js  (conditions: pre-spawn check, Agent)
-  │                   plan-gate.js            (plan review, ExitPlanMode)
+  ├─ PreToolUse ────→ PipelineBlock.js      (block tools while pipeline active)
+  │                   PipelineConditions.js  (conditions: pre-spawn check, Agent)
+  │                   PlanGate.js            (plan review, ExitPlanMode)
   │
-  ├─ PostToolUse ───→ plan-gate-clear.js     (clear plan gate, ExitPlanMode)
+  ├─ PostToolUse ───→ PlanGateClear.js     (clear plan gate, ExitPlanMode)
   │
-  ├─ SubagentStart ─→ pipeline-injection.js  (pipeline creation + role context)
+  ├─ SubagentStart ─→ PipelineInjection.js  (pipeline creation + role context)
   │
-  └─ SubagentStop ──→ pipeline-verification.js (verdict → state machine)
+  └─ SubagentStop ──→ PipelineVerification.js (verdict → state machine)
 
 Engine: PipelineEngine.ts ─── state machine, owns ALL transitions via step()
 State:  PipelineRepository.ts ─ SQLite tables: pipeline_state, pipeline_steps,
@@ -172,7 +172,7 @@ State:  PipelineRepository.ts ─ SQLite tables: pipeline_state, pipeline_steps,
 Gates:  GateRepository.ts ─── plan-gate attempts + MCP verdict storage
 ```
 
-TypeScript source in `src/`, compiled to `scripts/`. 108 unit tests + 28 end-to-end tests. See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and [CHANGELOG.md](CHANGELOG.md) for version history.
+TypeScript source in `src/`, compiled to `scripts/`. 126 unit tests + 28 end-to-end tests. See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ## Performance
 
@@ -186,7 +186,7 @@ Benchmarks on the pipeline engine (1,000 iterations, SQLite WAL mode):
 | DB write (setVerdict) | 0.04 ms | 24,148 |
 | Concurrent isolation (10 pipelines) | 9.76 ms | 102 |
 
-Run `node scripts/Benchmark.js` to reproduce.
+Run `node scripts/benchmark.js` to reproduce.
 
 ## Observability
 
@@ -223,7 +223,7 @@ Run `/claude-gates:setup` to configure all interactively.
 ## Testing
 
 ```bash
-node scripts/PipelineTest.js           # 108 unit/integration tests
+node scripts/PipelineTest.js           # 126 unit/integration tests
 node scripts/PipelineE2eTest.js       # 28 end-to-end tests
 ```
 

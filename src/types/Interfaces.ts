@@ -88,4 +88,5 @@ export interface IHookInput
   agent_transcript_path?: string;
   last_assistant_message?: string;
   error?: string;
+  prompt?: string;
 }

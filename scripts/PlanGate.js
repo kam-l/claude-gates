@@ -27,6 +27,9 @@ const SessionManager_1 = require("./SessionManager");
 const TRIVIAL_LINE_LIMIT = 20;
 const MAX_ATTEMPTS = 3;
 function onExitPlanMode(data) {
+    if (SessionManager_1.SessionManager.isGateDisabled()) {
+        process.exit(0);
+    }
     const sessionId = data.session_id || "";
     if (!sessionId) {
         process.exit(0);
@@ -35,15 +38,19 @@ function onExitPlanMode(data) {
     const sessionDir = SessionManager_1.SessionManager.getSessionDir(sessionId);
     const plansDir = path_1.default.join(HOME, ".claude", "plans");
     // ── Check for gater verdict (SQLite) ──
-    const db = GateRepository_1.GateRepository.createDb(sessionDir);
     let gaterVerified = false;
+    let db = null;
     try {
+        db = GateRepository_1.GateRepository.createDb(sessionDir);
         const row = db.prepare("SELECT 1 FROM agents WHERE agent = 'gater' AND verdict IN ('PASS','CONVERGED') LIMIT 1").get();
         gaterVerified = !!row;
     }
     catch {
     }
-    db.close();
+    finally {
+        db?.close();
+        db = null;
+    }
     if (gaterVerified) {
         process.exit(0); // verified — allow
     }
@@ -67,17 +74,24 @@ function onExitPlanMode(data) {
         process.exit(0); // trivial plan — allow
     }
     // ── Attempt tracking — auto-allow after MAX_ATTEMPTS ──
-    const db2 = GateRepository_1.GateRepository.createDb(sessionDir);
-    const gateRepo = new GateRepository_1.GateRepository(db2);
-    gateRepo.incrAttempts("_system", "plan-gate");
-    const attempts = gateRepo.getAttempts("_system", "plan-gate");
-    if (attempts >= MAX_ATTEMPTS) {
-        gateRepo.resetAttempts("_system", "plan-gate");
-        db2.close();
+    let safetyValve = false;
+    try {
+        db = GateRepository_1.GateRepository.createDb(sessionDir);
+        const gateRepo = new GateRepository_1.GateRepository(db);
+        gateRepo.incrAttempts("_system", "plan-gate");
+        const attempts = gateRepo.getAttempts("_system", "plan-gate");
+        if (attempts >= MAX_ATTEMPTS) {
+            gateRepo.resetAttempts("_system", "plan-gate");
+            safetyValve = true;
+        }
+    }
+    finally {
+        db?.close();
+    }
+    if (safetyValve) {
         process.stderr.write(`[ClaudeGates] ⚠️ Safety valve activated.\n`);
         process.exit(0);
     }
-    db2.close();
     // ── Block ──
     const reason = `[ClaudeGates] 🔐 "${planFiles[0].name}" (${lines} lines) unverified. Spawn claude-gates:gater with scope=verify-plan.`;
     process.stdout.write(JSON.stringify({ decision: "block", reason, }));

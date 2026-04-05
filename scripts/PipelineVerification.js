@@ -102,7 +102,7 @@ function ensureMcpConfig(sessionDir) {
     const mcpConfigPath = path_1.default.join(sessionDir, "mcp-config.json");
     if (!fs_1.default.existsSync(mcpConfigPath)) {
         const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || PROJECT_ROOT;
-        const serverScript = path_1.default.join(pluginRoot, "scripts", "mcp-server.js").replace(/\\/g, "/");
+        const serverScript = path_1.default.join(pluginRoot, "scripts", "McpServer.js").replace(/\\/g, "/");
         const config = {
             mcpServers: {
                 "claude-gates": {
@@ -146,7 +146,7 @@ function runSemanticCheck(prompt, artifactContent, artifactPath, contextContent,
     if (sessionDir && sessionId && scope) {
         const mcpConfigPath = ensureMcpConfig(sessionDir);
         cmd =
-            `claude -p --model sonnet --agent claude-gates:gater --max-turns 5 --tools "mcp__claude-gates__*" --mcp-config ${mcpConfigPath} --no-chrome --strict-mcp-config --disable-slash-commands --no-session-persistence`;
+            `claude -p --model sonnet --agent claude-gates:gater --max-turns 5 --tools "mcp__claude-gates__*" --mcp-config "${mcpConfigPath}" --no-chrome --strict-mcp-config --disable-slash-commands --no-session-persistence`;
         timeout = 180000;
     }
     else {
@@ -278,6 +278,9 @@ function implicitSourceCheck(content, artifactPath) {
 }
 // ── Handler (exported for hook-handler barrel + testing) ────────────
 async function onSubagentStop(data) {
+    if (SessionManager_1.SessionManager.isGateDisabled()) {
+        process.exit(0);
+    }
     const isContinuation = !!data.stop_hook_active;
     const agentType = data.agent_type || "";
     if (!agentType) {
@@ -299,11 +302,12 @@ async function onSubagentStop(data) {
         || extractScopeFromTranscript(data.transcript_path && agentId !== "unknown"
             ? data.transcript_path.replace(/\.jsonl$/, "") + "/subagents/agent-" + agentId + ".jsonl"
             : null);
-    const db = SessionManager_1.SessionManager.openDatabase(sessionDir);
-    PipelineRepository_1.PipelineRepository.initSchema(db);
-    const repo = new PipelineRepository_1.PipelineRepository(db);
-    const pipelineEngine = new PipelineEngine_1.PipelineEngine(repo);
+    let db = null;
     try {
+        db = SessionManager_1.SessionManager.openDatabase(sessionDir);
+        PipelineRepository_1.PipelineRepository.initSchema(db);
+        const repo = new PipelineRepository_1.PipelineRepository(db);
+        const pipelineEngine = new PipelineEngine_1.PipelineEngine(repo);
         // Resolve artifact: existing file → pivot agent to write one
         let scope = transcriptScope;
         let artifactPath = null;
@@ -368,7 +372,7 @@ async function onSubagentStop(data) {
                         decision: "block",
                         reason: `[ClaudeGates] ${pivotMsg}`,
                     }));
-                    process.exit(0);
+                    return;
                 }
                 else if (!fs_1.default.existsSync(correctPath) && isContinuation) {
                     // Continuation but agent still didn't write file — fallback to lastMessage
@@ -431,7 +435,7 @@ async function onSubagentStop(data) {
                     notifyVerify(sessionDir, `Agent "${bareAgentType}" has verification: but no scope. Add scope=<name> to the spawn prompt.`);
                 }
             }
-            process.exit(0);
+            return;
         }
         // Artifact missing — treat as FAIL to avoid deadlock (step stays "active" forever otherwise)
         if (!artifactPath || !fs_1.default.existsSync(artifactPath)) {
@@ -441,7 +445,7 @@ async function onSubagentStop(data) {
                 Tracing_1.Tracing.trace(sessionDir, "verdict.no-artifact", scope, { agent: bareAgentType, role, });
                 pipelineEngine.step(scope, { role, artifactVerdict: "FAIL", });
             }
-            process.exit(0);
+            return;
         }
         const artifactContent = fs_1.default.readFileSync(artifactPath, "utf-8");
         // Extract artifact verdict — what the agent decided (e.g. reviewer's PASS/REVISE).
@@ -471,7 +475,7 @@ async function onSubagentStop(data) {
         await Tracing_1.Tracing.flush(langfuse, enabled);
     }
     finally {
-        db.close();
+        db?.close();
     }
     process.exit(0);
 }
@@ -500,7 +504,12 @@ function handleSource(repo, pipelineEngine, scope, agentType, artifactPath, arti
             trace.span({
                 name: "engine-step",
                 input: { role: "source", agent: agentType, artifactVerdict, },
-                output: { action: nextAction?.action, nextAgent: nextAction?.agent, round: nextAction?.round, maxRounds: nextAction?.maxRounds, },
+                output: {
+                    action: nextAction?.action,
+                    nextAgent: nextAction?.agent,
+                    round: nextAction?.round,
+                    maxRounds: nextAction?.maxRounds,
+                },
             }).end();
             return;
         }
@@ -533,7 +542,12 @@ function handleSource(repo, pipelineEngine, scope, agentType, artifactPath, arti
         qualityCheck = semanticResult?.check ?? semanticResult?.verdict ?? null;
         trace.span({
             name: "semantic-check",
-            input: { prompt: activeStep.prompt, agent: agentType, artifactPath: path_1.default.basename(artifactPath), artifactSize: artifactContent.length, },
+            input: {
+                prompt: activeStep.prompt,
+                agent: agentType,
+                artifactPath: path_1.default.basename(artifactPath),
+                artifactSize: artifactContent.length,
+            },
             output: { verdict: qualityCheck, reason: semanticResult?.reason, },
         }).end();
         Tracing_1.Tracing.score(trace, enabled, "verdict", qualityCheck || "UNKNOWN", semanticResult?.reason);
@@ -556,7 +570,12 @@ function handleSource(repo, pipelineEngine, scope, agentType, artifactPath, arti
     trace.span({
         name: "engine-step",
         input: { role: "source", agent: agentType, artifactVerdict: finalVerdict, qualityCheck, },
-        output: { action: nextAction?.action, nextAgent: nextAction?.agent, round: nextAction?.round, maxRounds: nextAction?.maxRounds, },
+        output: {
+            action: nextAction?.action,
+            nextAgent: nextAction?.agent,
+            round: nextAction?.round,
+            maxRounds: nextAction?.maxRounds,
+        },
     }).end();
     if (finalVerdict === "FAIL") {
         const reason = semanticResult && semanticResult.reason ? semanticResult.reason : "Semantic validation failed";
@@ -574,7 +593,12 @@ function handleVerifier(repo, pipelineEngine, scope, agentType, artifactPath, ar
     const qualityCheck = semanticResult?.check ?? semanticResult?.verdict ?? null;
     trace.span({
         name: "semantic-check",
-        input: { prompt: "implicit-verifier-check", agent: agentType, artifactPath: path_1.default.basename(artifactPath), artifactSize: artifactContent.length, },
+        input: {
+            prompt: "implicit-verifier-check",
+            agent: agentType,
+            artifactPath: path_1.default.basename(artifactPath),
+            artifactSize: artifactContent.length,
+        },
         output: { verdict: qualityCheck, reason: semanticResult?.reason, },
     }).end();
     Tracing_1.Tracing.score(trace, enabled, "verdict", qualityCheck || "UNKNOWN", semanticResult?.reason);
@@ -596,7 +620,12 @@ function handleVerifier(repo, pipelineEngine, scope, agentType, artifactPath, ar
         trace.span({
             name: "engine-step",
             input: { role: "verifier", agent: agentType, artifactVerdict, qualityCheck, },
-            output: { action: retryAction?.action, nextAgent: retryAction?.agent, round: retryAction?.round, maxRounds: retryAction?.maxRounds, },
+            output: {
+                action: retryAction?.action,
+                nextAgent: retryAction?.agent,
+                round: retryAction?.round,
+                maxRounds: retryAction?.maxRounds,
+            },
         }).end();
         Tracing_1.Tracing.score(trace, enabled, "verdict", "FAIL", "quality check failed, retrying reviewer");
         return;
@@ -613,7 +642,12 @@ function handleVerifier(repo, pipelineEngine, scope, agentType, artifactPath, ar
     trace.span({
         name: "engine-step",
         input: { role: "verifier", agent: agentType, artifactVerdict, qualityCheck, },
-        output: { action: nextAction?.action, nextAgent: nextAction?.agent, round: nextAction?.round, maxRounds: nextAction?.maxRounds, },
+        output: {
+            action: nextAction?.action,
+            nextAgent: nextAction?.agent,
+            round: nextAction?.round,
+            maxRounds: nextAction?.maxRounds,
+        },
     }).end();
 }
 function handleFixer(repo, pipelineEngine, scope, agentType, artifactPath, artifactContent, artifactVerdict, scopeContext, sessionDir, sessionId, trace, enabled) {
@@ -624,7 +658,12 @@ function handleFixer(repo, pipelineEngine, scope, agentType, artifactPath, artif
     recordVerdict(repo, scope, agentType, artifactVerdict);
     trace.span({
         name: "semantic-check",
-        input: { prompt: "implicit-fixer-check", agent: agentType, artifactPath: path_1.default.basename(artifactPath), artifactSize: artifactContent.length, },
+        input: {
+            prompt: "implicit-fixer-check",
+            agent: agentType,
+            artifactPath: path_1.default.basename(artifactPath),
+            artifactSize: artifactContent.length,
+        },
         output: { verdict: qualityCheck, reason: semanticResult?.reason, },
     }).end();
     Tracing_1.Tracing.score(trace, enabled, "verdict", qualityCheck || "UNKNOWN", semanticResult?.reason);
@@ -641,7 +680,12 @@ function handleFixer(repo, pipelineEngine, scope, agentType, artifactPath, artif
     trace.span({
         name: "engine-step",
         input: { role: "fixer", agent: agentType, artifactVerdict, qualityCheck, },
-        output: { action: nextAction?.action, nextAgent: nextAction?.agent, round: nextAction?.round, maxRounds: nextAction?.maxRounds, },
+        output: {
+            action: nextAction?.action,
+            nextAgent: nextAction?.agent,
+            round: nextAction?.round,
+            maxRounds: nextAction?.maxRounds,
+        },
     }).end();
 }
 function handleTransformer(repo, pipelineEngine, scope, agentType, artifactPath, sessionDir, trace, enabled) {
@@ -658,7 +702,12 @@ function handleTransformer(repo, pipelineEngine, scope, agentType, artifactPath,
     trace.span({
         name: "engine-step",
         input: { role: "transformer", agent: agentType, },
-        output: { action: nextAction?.action, nextAgent: nextAction?.agent, round: nextAction?.round, maxRounds: nextAction?.maxRounds, },
+        output: {
+            action: nextAction?.action,
+            nextAgent: nextAction?.agent,
+            round: nextAction?.round,
+            maxRounds: nextAction?.maxRounds,
+        },
     }).end();
     Tracing_1.Tracing.score(trace, enabled, "verdict", "PASS");
 }

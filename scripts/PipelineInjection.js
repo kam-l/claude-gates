@@ -26,6 +26,9 @@ const SessionManager_1 = require("./SessionManager");
 const Enums_1 = require("./types/Enums");
 const HOME = process.env.USERPROFILE || process.env.HOME || "";
 function onSubagentStart(data) {
+    if (SessionManager_1.SessionManager.isGateDisabled()) {
+        process.exit(0);
+    }
     const sessionId = data.session_id || "";
     const agentType = data.agent_type || "";
     if (!sessionId || !agentType) {
@@ -35,11 +38,12 @@ function onSubagentStart(data) {
     const sessionDir = SessionManager_1.SessionManager.getSessionDir(sessionId);
     // Context enrichment via DB (pipeline creation deferred to SubagentStop)
     let pipelineContext = "";
-    const db = SessionManager_1.SessionManager.openDatabase(sessionDir);
-    PipelineRepository_1.PipelineRepository.initSchema(db);
-    const repo = new PipelineRepository_1.PipelineRepository(db);
-    const pipelineEngine = new PipelineEngine_1.PipelineEngine(repo);
+    let db = null;
     try {
+        db = SessionManager_1.SessionManager.openDatabase(sessionDir);
+        PipelineRepository_1.PipelineRepository.initSchema(db);
+        const repo = new PipelineRepository_1.PipelineRepository(db);
+        const pipelineEngine = new PipelineEngine_1.PipelineEngine(repo);
         // Find scope: prefer pending marker (accurate for parallel agents), fall back to DB
         let scope = null;
         const pendingMarker = path_1.default.join(sessionDir, `.pending-scope-${bareAgentType}`);
@@ -112,7 +116,7 @@ function onSubagentStart(data) {
         }
     }
     finally {
-        db.close();
+        db?.close();
     }
     // Only inject if there's role context to provide (verifier/fixer)
     if (!pipelineContext) {

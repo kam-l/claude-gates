@@ -120,6 +120,9 @@ Pipeline enforcement happens across four hooks that must stay in sync:
 SessionStart
   -> session-context.ts: injects [ClaudeGates] awareness to orchestrator
 
+UserPromptSubmit
+  -> gate-toggle.ts: intercepts "gate on/off/status" to toggle or query gate-disabled marker
+
 PreToolUse (every tool call)
   -> pipeline-block.ts: blocks all tools except next required pipeline action + allowlist
   -> pipeline-conditions.ts (Agent only): conditions check + scope registration
@@ -133,6 +136,8 @@ SubagentStop
 
 PostToolUse
   -> plan-gate-clear.ts (ExitPlanMode only): clears gater verdict after plan exits
+
+All pipeline hooks (block, conditions, injection, verification, plan-gate, plan-gate-clear) check the gate-disabled marker at entry and exit early when gates are off.
 ```
 
 ### SubagentStop Detail (main logic)
@@ -231,16 +236,16 @@ src/
   Messaging.ts                # block, info, notify, log
   Tracing.ts                  # Langfuse + audit.jsonl
 
-  session-context.ts          # Hook: SessionStart
-  pipeline-verification.ts    # Hook: SubagentStop — artifact capture + checker dispatch
-  pipeline-block.ts           # Hook: PreToolUse — blocks tools during active pipeline
-  pipeline-conditions.ts      # Hook: PreToolUse:Agent — conditions + step enforcement
-  pipeline-injection.ts       # Hook: SubagentStart — pipeline creation + context enrichment
-  plan-gate.ts                # Hook: PreToolUse:ExitPlanMode
-  plan-gate-clear.ts          # Hook: PostToolUse:ExitPlanMode
-  mcp-server.ts               # MCP: gate_verdict + gate_status
-  database.ts                 # Test helper over PipelineRepository
-  state-machine.ts            # Test helper over PipelineEngine
+  SessionContext.ts            # Hook: SessionStart
+  PipelineVerification.ts     # Hook: SubagentStop — artifact capture + checker dispatch
+  PipelineBlock.ts            # Hook: PreToolUse — blocks tools during active pipeline
+  PipelineConditions.ts       # Hook: PreToolUse:Agent — conditions + step enforcement
+  PipelineInjection.ts        # Hook: SubagentStart — pipeline creation + context enrichment
+  PlanGate.ts                 # Hook: PreToolUse:ExitPlanMode
+  PlanGateClear.ts            # Hook: PostToolUse:ExitPlanMode
+  McpServer.ts                # MCP: gate_verdict + gate_status
+  Database.ts                 # Test helper over PipelineRepository
+  StateMachine.ts             # Test helper over PipelineEngine
 ```
 
 ## Session State

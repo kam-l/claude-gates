@@ -39,37 +39,39 @@ class PipelineEngine {
     }
     // ── Step processing ────────────────────────────────────────────────
     step(scope, input) {
-        const { role, artifactVerdict, } = this.normalizeInput(input);
-        const state = this._repo.getPipelineState(scope);
-        if (!state || state.status === Enums_1.PipelineStatus.Completed || state.status === Enums_1.PipelineStatus.Failed) {
-            return null;
-        }
-        if (role === Enums_1.AgentRole.Fixer) {
-            return this.reactivateRevisionStep(scope);
-        }
-        if (role === Enums_1.AgentRole.Source && state.status === Enums_1.PipelineStatus.Revision) {
-            return this.reactivateRevisionStep(scope);
-        }
-        const activeStep = this._repo.getActiveStep(scope);
-        if (!activeStep) {
-            return null;
-        }
-        if (activeStep.step_type === Enums_1.StepType.Transform
-            && (role === Enums_1.AgentRole.Transformer || role === Enums_1.AgentRole.Source || role === Enums_1.AgentRole.Fixer)) {
+        return this._repo.transaction(() => {
+            const { role, artifactVerdict, } = this.normalizeInput(input);
+            const state = this._repo.getPipelineState(scope);
+            if (!state || state.status === Enums_1.PipelineStatus.Completed || state.status === Enums_1.PipelineStatus.Failed) {
+                return null;
+            }
+            if (role === Enums_1.AgentRole.Fixer) {
+                return this.reactivateRevisionStep(scope);
+            }
+            if (role === Enums_1.AgentRole.Source && state.status === Enums_1.PipelineStatus.Revision) {
+                return this.reactivateRevisionStep(scope);
+            }
+            const activeStep = this._repo.getActiveStep(scope);
+            if (!activeStep) {
+                return null;
+            }
+            if (activeStep.step_type === Enums_1.StepType.Transform
+                && (role === Enums_1.AgentRole.Transformer || role === Enums_1.AgentRole.Source || role === Enums_1.AgentRole.Fixer)) {
+                return this.advance(scope, activeStep);
+            }
+            if (role === Enums_1.AgentRole.Source && activeStep.step_type !== Enums_1.StepType.Check) {
+                return this.buildAction(scope);
+            }
+            const v = this.normalizeVerdict(artifactVerdict);
+            if (v === Enums_1.Verdict.Pass) {
+                return this.advance(scope, activeStep);
+            }
+            if (v === Enums_1.Verdict.Revise) {
+                return this.revise(scope, state, activeStep);
+            }
+            process.stderr.write(`[ClaudeGates] ⚠️ Unknown verdict "${artifactVerdict}" for scope="${scope}" step ${activeStep.step_index}. Treating as PASS.\n`);
             return this.advance(scope, activeStep);
-        }
-        if (role === Enums_1.AgentRole.Source && activeStep.step_type !== Enums_1.StepType.Check) {
-            return this.buildAction(scope);
-        }
-        const v = this.normalizeVerdict(artifactVerdict);
-        if (v === Enums_1.Verdict.Pass) {
-            return this.advance(scope, activeStep);
-        }
-        if (v === Enums_1.Verdict.Revise) {
-            return this.revise(scope, state, activeStep);
-        }
-        process.stderr.write(`[ClaudeGates] ⚠️ Unknown verdict "${artifactVerdict}" for scope="${scope}" step ${activeStep.step_index}. Treating as PASS.\n`);
-        return this.advance(scope, activeStep);
+        });
     }
     // ── Action query ───────────────────────────────────────────────────
     getNextAction(scope) {
@@ -90,7 +92,9 @@ class PipelineEngine {
     resolveRole(scope, agentType) {
         if (!scope) {
             const pipelines = this._repo.getActivePipelines();
-            for (const p of pipelines) {
+            // Prefer pipelines in revision state (fixer/verifier most likely expected there)
+            const sorted = [...pipelines,].sort((a, b) => (a.status === Enums_1.PipelineStatus.Revision ? 0 : 1) - (b.status === Enums_1.PipelineStatus.Revision ? 0 : 1));
+            for (const p of sorted) {
                 const role = this.resolveRoleInScope(p.scope, agentType, p.source_agent);
                 if (role !== Enums_1.AgentRole.Ungated) {
                     return role;
@@ -109,20 +113,20 @@ class PipelineEngine {
      * Increments round, checks exhaustion. Gate stays active.
      */
     retryGateAgent(scope) {
-        const activeStep = this._repo.getActiveStep(scope);
-        if (!activeStep) {
-            return null;
-        }
-        const newRound = activeStep.round + 1;
-        if (newRound > activeStep.max_rounds) {
-            this._repo.transaction(() => {
+        return this._repo.transaction(() => {
+            const activeStep = this._repo.getActiveStep(scope);
+            if (!activeStep) {
+                return null;
+            }
+            const newRound = activeStep.round + 1;
+            if (newRound > activeStep.max_rounds) {
                 this._repo.updateStepStatus(scope, activeStep.step_index, Enums_1.StepStatus.Failed, newRound);
                 this._repo.updatePipelineState(scope, { status: Enums_1.PipelineStatus.Failed, });
-            });
-            return { action: "failed", scope, step: activeStep, round: newRound, maxRounds: activeStep.max_rounds, };
-        }
-        this._repo.updateStepStatus(scope, activeStep.step_index, Enums_1.StepStatus.Active, newRound);
-        return this.buildAction(scope);
+                return { action: "failed", scope, step: activeStep, round: newRound, maxRounds: activeStep.max_rounds, };
+            }
+            this._repo.updateStepStatus(scope, activeStep.step_index, Enums_1.StepStatus.Active, newRound);
+            return this.buildAction(scope);
+        });
     }
     // ── Internal: input normalization ──────────────────────────────────
     normalizeInput(input) {
@@ -180,7 +184,8 @@ class PipelineEngine {
             this._repo.updatePipelineState(scope, { status: Enums_1.PipelineStatus.Revision, revision_step: activeStep.step_index, });
         });
         const agent = hasFixer ? activeStep.fixer : state.source_agent;
-        return { action: "source", agent, scope, step: activeStep, };
+        const freshStep = this._repo.getStep(scope, activeStep.step_index) || activeStep;
+        return { action: "source", agent, scope, step: freshStep, };
     }
     reactivateRevisionStep(scope) {
         const reviseRow = this._repo.getStepByStatus(scope, Enums_1.StepStatus.Revise);

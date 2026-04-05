@@ -6,7 +6,7 @@
  *   gate_verdict — submit PASS/REVISE/FAIL verdict for a pipeline or plan-gate scope
  *   gate_status  — read-only pipeline state query
  *
- * Transport: stdio. Entry point: node scripts/mcp-server.js
+ * Transport: stdio. Entry point: node scripts/McpServer.js
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 const mcp_js_1 = require("@modelcontextprotocol/sdk/server/mcp.js");
@@ -17,10 +17,16 @@ const zod_1 = require("zod");
 const GateRepository_1 = require("./GateRepository");
 const PipelineRepository_1 = require("./PipelineRepository");
 const SessionManager_1 = require("./SessionManager");
-const pkg = JSON.parse((0, fs_1.readFileSync)((0, path_1.join)(__dirname, "..", "package.json"), "utf8"));
+let version = "0.0.0";
+try {
+    const pkg = JSON.parse((0, fs_1.readFileSync)((0, path_1.join)(__dirname, "..", "package.json"), "utf8"));
+    version = pkg.version || version;
+}
+catch {
+}
 const server = new mcp_js_1.McpServer({
     name: "claude-gates",
-    version: pkg.version,
+    version,
 });
 // ── gate_verdict ────────────────────────────────────────────────────
 server.tool("gate_verdict", {
@@ -47,9 +53,10 @@ server.tool("gate_verdict", {
             }
         }
         // Pipeline scope — record verdict only (hook process drives engine.step)
-        const db = SessionManager_1.SessionManager.openDatabase(sessionDir);
-        PipelineRepository_1.PipelineRepository.initSchema(db);
+        let db = null;
         try {
+            db = SessionManager_1.SessionManager.openDatabase(sessionDir);
+            PipelineRepository_1.PipelineRepository.initSchema(db);
             const repo = new PipelineRepository_1.PipelineRepository(db);
             const activeStep = repo.getActiveStep(scope);
             if (!activeStep) {
@@ -68,7 +75,7 @@ server.tool("gate_verdict", {
             };
         }
         finally {
-            db.close();
+            db?.close();
         }
     }
     catch (err) {
@@ -87,9 +94,10 @@ server.tool("gate_status", {
 }, async ({ session_id, scope, }) => {
     try {
         const sessionDir = SessionManager_1.SessionManager.getSessionDir(session_id);
-        const db = SessionManager_1.SessionManager.openDatabase(sessionDir);
-        PipelineRepository_1.PipelineRepository.initSchema(db);
+        let db = null;
         try {
+            db = SessionManager_1.SessionManager.openDatabase(sessionDir);
+            PipelineRepository_1.PipelineRepository.initSchema(db);
             const repo = new PipelineRepository_1.PipelineRepository(db);
             if (scope) {
                 const state = repo.getPipelineState(scope);
@@ -128,7 +136,7 @@ server.tool("gate_status", {
             };
         }
         finally {
-            db.close();
+            db?.close();
         }
     }
     catch (err) {

@@ -35,6 +35,9 @@ const Tracing_1 = require("./Tracing");
 const HOME = process.env.USERPROFILE || process.env.HOME || "";
 const PROJECT_ROOT = process.cwd();
 function onConditionsCheck(data) {
+    if (SessionManager_1.SessionManager.isGateDisabled()) {
+        process.exit(0);
+    }
     // PreToolUse:Agent provides tool_input with prompt and subagent_type
     const toolInput = data.tool_input || {};
     const agentType = toolInput.subagent_type || "";
@@ -108,11 +111,12 @@ function onConditionsCheck(data) {
         }
     }
     // ── Step enforcement via engine ──
-    const db = SessionManager_1.SessionManager.openDatabase(sessionDir);
-    PipelineRepository_1.PipelineRepository.initSchema(db);
-    const repo = new PipelineRepository_1.PipelineRepository(db);
-    const pipelineEngine = new PipelineEngine_1.PipelineEngine(repo);
+    let db = null;
     try {
+        db = SessionManager_1.SessionManager.openDatabase(sessionDir);
+        PipelineRepository_1.PipelineRepository.initSchema(db);
+        const repo = new PipelineRepository_1.PipelineRepository(db);
+        const pipelineEngine = new PipelineEngine_1.PipelineEngine(repo);
         const actions = pipelineEngine.getAllNextActions();
         if (actions && actions.length > 0) {
             // Check if any action expects this agent type for this scope
@@ -122,7 +126,6 @@ function onConditionsCheck(data) {
                 if (scopeAction.action === "spawn" || scopeAction.action === "source") {
                     if (scopeAction.agent !== bareAgentType) {
                         Messaging_1.Messaging.block("🔏", `Scope "${scope}" expects "${scopeAction.agent}", not "${bareAgentType}". Spawn ${scopeAction.agent}.`);
-                        db.close();
                         process.exit(0);
                     }
                 }
@@ -163,7 +166,7 @@ function onConditionsCheck(data) {
         }
     }
     finally {
-        db.close();
+        db?.close();
     }
     // Allow
     process.exit(0);

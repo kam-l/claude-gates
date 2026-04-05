@@ -5,7 +5,7 @@
  *   gate_verdict — submit PASS/REVISE/FAIL verdict for a pipeline or plan-gate scope
  *   gate_status  — read-only pipeline state query
  *
- * Transport: stdio. Entry point: node scripts/mcp-server.js
+ * Transport: stdio. Entry point: node scripts/McpServer.js
  */
 
 import { McpServer, } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -17,11 +17,19 @@ import { GateRepository, } from "./GateRepository";
 import { PipelineRepository, } from "./PipelineRepository";
 import { SessionManager, } from "./SessionManager";
 
-const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json",), "utf8",),);
+let version = "0.0.0";
+try
+{
+  const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json",), "utf8",),);
+  version = pkg.version || version;
+}
+catch
+{
+}
 
 const server = new McpServer({
   name: "claude-gates",
-  version: pkg.version,
+  version,
 },);
 
 // ── gate_verdict ────────────────────────────────────────────────────
@@ -32,7 +40,9 @@ server.tool(
     session_id: z.string().describe("Session UUID",),
     scope: z.string().describe("Pipeline scope or 'verify-plan' for plan-gate",),
     verdict: z.enum(["PASS", "REVISE", "FAIL",],).describe("Verdict: what the reviewed agent decided (PASS, REVISE, or FAIL)",),
-    check: z.enum(["PASS", "FAIL",],).optional().describe("Quality check: your assessment of the agent's work (PASS = thorough, FAIL = sloppy/wrong)",),
+    check: z.enum(["PASS", "FAIL",],).optional().describe(
+      "Quality check: your assessment of the agent's work (PASS = thorough, FAIL = sloppy/wrong)",
+    ),
     reason: z.string().describe("Human-readable reason for the verdict",),
   },
   async ({ session_id, scope, verdict, check, reason, },) =>
@@ -60,10 +70,11 @@ server.tool(
       }
 
       // Pipeline scope — record verdict only (hook process drives engine.step)
-      const db = SessionManager.openDatabase(sessionDir,);
-      PipelineRepository.initSchema(db,);
+      let db: ReturnType<typeof SessionManager.openDatabase> | null = null;
       try
       {
+        db = SessionManager.openDatabase(sessionDir,);
+        PipelineRepository.initSchema(db,);
         const repo = new PipelineRepository(db,);
         const activeStep = repo.getActiveStep(scope,);
         if (!activeStep)
@@ -87,7 +98,7 @@ server.tool(
       }
       finally
       {
-        db.close();
+        db?.close();
       }
     }
     catch (err)
@@ -115,10 +126,11 @@ server.tool(
     try
     {
       const sessionDir = SessionManager.getSessionDir(session_id,);
-      const db = SessionManager.openDatabase(sessionDir,);
-      PipelineRepository.initSchema(db,);
+      let db: ReturnType<typeof SessionManager.openDatabase> | null = null;
       try
       {
+        db = SessionManager.openDatabase(sessionDir,);
+        PipelineRepository.initSchema(db,);
         const repo = new PipelineRepository(db,);
         if (scope)
         {
@@ -162,7 +174,7 @@ server.tool(
       }
       finally
       {
-        db.close();
+        db?.close();
       }
     }
     catch (err)

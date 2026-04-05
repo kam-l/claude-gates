@@ -123,7 +123,7 @@ function ensureMcpConfig(sessionDir: string,): string
   if (!fs.existsSync(mcpConfigPath,))
   {
     const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || PROJECT_ROOT;
-    const serverScript = path.join(pluginRoot, "scripts", "mcp-server.js",).replace(/\\/g, "/",);
+    const serverScript = path.join(pluginRoot, "scripts", "McpServer.js",).replace(/\\/g, "/",);
     const config = {
       mcpServers: {
         "claude-gates": {
@@ -184,7 +184,7 @@ function runSemanticCheck(
   {
     const mcpConfigPath = ensureMcpConfig(sessionDir,);
     cmd =
-      `claude -p --model sonnet --agent claude-gates:gater --max-turns 5 --tools "mcp__claude-gates__*" --mcp-config ${mcpConfigPath} --no-chrome --strict-mcp-config --disable-slash-commands --no-session-persistence`;
+      `claude -p --model sonnet --agent claude-gates:gater --max-turns 5 --tools "mcp__claude-gates__*" --mcp-config "${mcpConfigPath}" --no-chrome --strict-mcp-config --disable-slash-commands --no-session-persistence`;
     timeout = 180000;
   }
   else
@@ -367,6 +367,11 @@ function implicitSourceCheck(content: string, artifactPath: string,): string | n
 
 export async function onSubagentStop(data: any,): Promise<void>
 {
+  if (SessionManager.isGateDisabled())
+  {
+    process.exit(0,);
+  }
+
   const isContinuation = !!data.stop_hook_active;
 
   const agentType = data.agent_type || "";
@@ -397,13 +402,13 @@ export async function onSubagentStop(data: any,): Promise<void>
         : null,
     );
 
-  const db = SessionManager.openDatabase(sessionDir,);
-  PipelineRepository.initSchema(db,);
-  const repo = new PipelineRepository(db,);
-  const pipelineEngine = new PipelineEngine(repo,);
-
+  let db: ReturnType<typeof SessionManager.openDatabase> | null = null;
   try
   {
+    db = SessionManager.openDatabase(sessionDir,);
+    PipelineRepository.initSchema(db,);
+    const repo = new PipelineRepository(db,);
+    const pipelineEngine = new PipelineEngine(repo,);
     // Resolve artifact: existing file → pivot agent to write one
     let scope = transcriptScope;
     let artifactPath: string | null = null;
@@ -489,7 +494,7 @@ export async function onSubagentStop(data: any,): Promise<void>
             decision: "block",
             reason: `[ClaudeGates] ${pivotMsg}`,
           },),);
-          process.exit(0,);
+          return;
         }
         else if (!fs.existsSync(correctPath,) && isContinuation)
         {
@@ -578,7 +583,7 @@ export async function onSubagentStop(data: any,): Promise<void>
           notifyVerify(sessionDir, `Agent "${bareAgentType}" has verification: but no scope. Add scope=<name> to the spawn prompt.`,);
         }
       }
-      process.exit(0,);
+      return;
     }
 
     // Artifact missing — treat as FAIL to avoid deadlock (step stays "active" forever otherwise)
@@ -591,7 +596,7 @@ export async function onSubagentStop(data: any,): Promise<void>
         Tracing.trace(sessionDir, "verdict.no-artifact", scope, { agent: bareAgentType, role, },);
         pipelineEngine.step(scope, { role, artifactVerdict: "FAIL", },);
       }
-      process.exit(0,);
+      return;
     }
 
     const artifactContent = fs.readFileSync(artifactPath, "utf-8",);
@@ -673,7 +678,7 @@ export async function onSubagentStop(data: any,): Promise<void>
   }
   finally
   {
-    db.close();
+    db?.close();
   }
 
   process.exit(0,);
@@ -726,7 +731,12 @@ function handleSource(
       trace.span({
         name: "engine-step",
         input: { role: "source", agent: agentType, artifactVerdict, },
-        output: { action: nextAction?.action, nextAgent: (nextAction as any)?.agent, round: (nextAction as any)?.round, maxRounds: (nextAction as any)?.maxRounds, },
+        output: {
+          action: nextAction?.action,
+          nextAgent: (nextAction as any)?.agent,
+          round: (nextAction as any)?.round,
+          maxRounds: (nextAction as any)?.maxRounds,
+        },
       },).end();
       return;
     }
@@ -764,7 +774,12 @@ function handleSource(
     qualityCheck = semanticResult?.check ?? semanticResult?.verdict ?? null;
     trace.span({
       name: "semantic-check",
-      input: { prompt: activeStep.prompt, agent: agentType, artifactPath: path.basename(artifactPath,), artifactSize: artifactContent.length, },
+      input: {
+        prompt: activeStep.prompt,
+        agent: agentType,
+        artifactPath: path.basename(artifactPath,),
+        artifactSize: artifactContent.length,
+      },
       output: { verdict: qualityCheck, reason: semanticResult?.reason, },
     },).end();
     Tracing.score(trace, enabled, "verdict", qualityCheck || "UNKNOWN", semanticResult?.reason,);
@@ -789,7 +804,12 @@ function handleSource(
   trace.span({
     name: "engine-step",
     input: { role: "source", agent: agentType, artifactVerdict: finalVerdict, qualityCheck, },
-    output: { action: nextAction?.action, nextAgent: (nextAction as any)?.agent, round: (nextAction as any)?.round, maxRounds: (nextAction as any)?.maxRounds, },
+    output: {
+      action: nextAction?.action,
+      nextAgent: (nextAction as any)?.agent,
+      round: (nextAction as any)?.round,
+      maxRounds: (nextAction as any)?.maxRounds,
+    },
   },).end();
 
   if (finalVerdict === "FAIL")
@@ -834,7 +854,12 @@ function handleVerifier(
   const qualityCheck = semanticResult?.check ?? semanticResult?.verdict ?? null;
   trace.span({
     name: "semantic-check",
-    input: { prompt: "implicit-verifier-check", agent: agentType, artifactPath: path.basename(artifactPath,), artifactSize: artifactContent.length, },
+    input: {
+      prompt: "implicit-verifier-check",
+      agent: agentType,
+      artifactPath: path.basename(artifactPath,),
+      artifactSize: artifactContent.length,
+    },
     output: { verdict: qualityCheck, reason: semanticResult?.reason, },
   },).end();
   Tracing.score(trace, enabled, "verdict", qualityCheck || "UNKNOWN", semanticResult?.reason,);
@@ -859,7 +884,12 @@ function handleVerifier(
     trace.span({
       name: "engine-step",
       input: { role: "verifier", agent: agentType, artifactVerdict, qualityCheck, },
-      output: { action: retryAction?.action, nextAgent: (retryAction as any)?.agent, round: (retryAction as any)?.round, maxRounds: (retryAction as any)?.maxRounds, },
+      output: {
+        action: retryAction?.action,
+        nextAgent: (retryAction as any)?.agent,
+        round: (retryAction as any)?.round,
+        maxRounds: (retryAction as any)?.maxRounds,
+      },
     },).end();
     Tracing.score(trace, enabled, "verdict", "FAIL", "quality check failed, retrying reviewer",);
     return;
@@ -877,7 +907,12 @@ function handleVerifier(
   trace.span({
     name: "engine-step",
     input: { role: "verifier", agent: agentType, artifactVerdict, qualityCheck, },
-    output: { action: nextAction?.action, nextAgent: (nextAction as any)?.agent, round: (nextAction as any)?.round, maxRounds: (nextAction as any)?.maxRounds, },
+    output: {
+      action: nextAction?.action,
+      nextAgent: (nextAction as any)?.agent,
+      round: (nextAction as any)?.round,
+      maxRounds: (nextAction as any)?.maxRounds,
+    },
   },).end();
 }
 
@@ -912,7 +947,12 @@ function handleFixer(
   recordVerdict(repo, scope, agentType, artifactVerdict,);
   trace.span({
     name: "semantic-check",
-    input: { prompt: "implicit-fixer-check", agent: agentType, artifactPath: path.basename(artifactPath,), artifactSize: artifactContent.length, },
+    input: {
+      prompt: "implicit-fixer-check",
+      agent: agentType,
+      artifactPath: path.basename(artifactPath,),
+      artifactSize: artifactContent.length,
+    },
     output: { verdict: qualityCheck, reason: semanticResult?.reason, },
   },).end();
   Tracing.score(trace, enabled, "verdict", qualityCheck || "UNKNOWN", semanticResult?.reason,);
@@ -930,7 +970,12 @@ function handleFixer(
   trace.span({
     name: "engine-step",
     input: { role: "fixer", agent: agentType, artifactVerdict, qualityCheck, },
-    output: { action: nextAction?.action, nextAgent: (nextAction as any)?.agent, round: (nextAction as any)?.round, maxRounds: (nextAction as any)?.maxRounds, },
+    output: {
+      action: nextAction?.action,
+      nextAgent: (nextAction as any)?.agent,
+      round: (nextAction as any)?.round,
+      maxRounds: (nextAction as any)?.maxRounds,
+    },
   },).end();
 }
 
@@ -958,7 +1003,12 @@ function handleTransformer(
   trace.span({
     name: "engine-step",
     input: { role: "transformer", agent: agentType, },
-    output: { action: nextAction?.action, nextAgent: (nextAction as any)?.agent, round: (nextAction as any)?.round, maxRounds: (nextAction as any)?.maxRounds, },
+    output: {
+      action: nextAction?.action,
+      nextAgent: (nextAction as any)?.agent,
+      round: (nextAction as any)?.round,
+      maxRounds: (nextAction as any)?.maxRounds,
+    },
   },).end();
   Tracing.score(trace, enabled, "verdict", "PASS",);
 }

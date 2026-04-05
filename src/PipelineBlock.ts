@@ -46,6 +46,11 @@ function sourceReason(act: any,)
 
 export async function onPreToolUse(data: any,): Promise<void>
 {
+  if (SessionManager.isGateDisabled())
+  {
+    process.exit(0,);
+  }
+
   const sessionId = data.session_id || "";
   if (!sessionId)
   {
@@ -62,20 +67,12 @@ export async function onPreToolUse(data: any,): Promise<void>
   // Surface queued notifications from SubagentStop (side-channel)
   const pending = Messaging.drainNotifications(sessionDir,);
 
-  const db = SessionManager.openDatabase(sessionDir,);
-  if (!db)
-  {
-    if (pending)
-    {
-      Messaging.info("", pending.replace(/\[ClaudeGates\] /g, "",),);
-    }
-    process.exit(0,);
-  }
-  PipelineRepository.initSchema(db,);
-
   let actions: any;
+  let db: ReturnType<typeof SessionManager.openDatabase> | null = null;
   try
   {
+    db = SessionManager.openDatabase(sessionDir,);
+    PipelineRepository.initSchema(db,);
     const repo = new PipelineRepository(db,);
     const pipelineEngine = new PipelineEngine(repo,);
     actions = pipelineEngine.getAllNextActions();
@@ -85,7 +82,7 @@ export async function onPreToolUse(data: any,): Promise<void>
   }
   finally
   {
-    db.close();
+    db?.close();
   }
 
   // No active pipeline — surface any pending notifications and allow
@@ -112,8 +109,8 @@ export async function onPreToolUse(data: any,): Promise<void>
 
   // /unblock is user-invocable-only (model can't see it) — no Skill allowlist needed
 
-  // Build expected agents
-  const expectedAgents = new Map<string, { scope: string; action: any; }>();
+  // Build expected agent names — Set avoids collisions when multiple scopes use the same agent name
+  const expectedAgentNames = new Set<string>();
 
   let hasBlockingActions = false;
   for (const act of actions)
@@ -134,7 +131,7 @@ export async function onPreToolUse(data: any,): Promise<void>
       const agent = act.agent || (act.step && act.step.source_agent);
       if (agent)
       {
-        expectedAgents.set(agent, { scope: act.scope, action: act, },);
+        expectedAgentNames.add(agent,);
       }
       hasBlockingActions = true;
     }
@@ -155,11 +152,11 @@ export async function onPreToolUse(data: any,): Promise<void>
     }
   }
 
-  // Agent tool: allow expected agents
+  // Agent tool: allow expected agents (any scope expecting this agent name)
   if (toolName === "Agent")
   {
     const subagentType = toolInput.subagent_type || "";
-    if (expectedAgents.has(subagentType,))
+    if (expectedAgentNames.has(subagentType,))
     {
       process.exit(0,);
     }

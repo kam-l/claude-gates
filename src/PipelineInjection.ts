@@ -24,6 +24,11 @@ const HOME = process.env.USERPROFILE || process.env.HOME || "";
 
 export function onSubagentStart(data: any,): void
 {
+  if (SessionManager.isGateDisabled())
+  {
+    process.exit(0,);
+  }
+
   const sessionId = data.session_id || "";
   const agentType = data.agent_type || "";
 
@@ -37,12 +42,13 @@ export function onSubagentStart(data: any,): void
 
   // Context enrichment via DB (pipeline creation deferred to SubagentStop)
   let pipelineContext = "";
-  const db = SessionManager.openDatabase(sessionDir,);
-  PipelineRepository.initSchema(db,);
-  const repo = new PipelineRepository(db,);
-  const pipelineEngine = new PipelineEngine(repo,);
+  let db: ReturnType<typeof SessionManager.openDatabase> | null = null;
   try
   {
+    db = SessionManager.openDatabase(sessionDir,);
+    PipelineRepository.initSchema(db,);
+    const repo = new PipelineRepository(db,);
+    const pipelineEngine = new PipelineEngine(repo,);
     // Find scope: prefer pending marker (accurate for parallel agents), fall back to DB
     let scope: string | null = null;
     const pendingMarker = path.join(sessionDir, `.pending-scope-${bareAgentType}`,);
@@ -132,7 +138,7 @@ export function onSubagentStart(data: any,): void
   }
   finally
   {
-    db.close();
+    db?.close();
   }
 
   // Only inject if there's role context to provide (verifier/fixer)

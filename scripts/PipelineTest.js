@@ -49,6 +49,8 @@ const os_1 = __importDefault(require("os"));
 const path_1 = __importDefault(require("path"));
 const crud = __importStar(require("./Database.js"));
 const FrontmatterParser_js_1 = require("./FrontmatterParser.js");
+const GateToggle_js_1 = require("./GateToggle.js");
+const SessionManager_js_1 = require("./SessionManager.js");
 const engine = __importStar(require("./StateMachine.js"));
 const Tracing_js_1 = require("./Tracing.js");
 const auditTrace = Tracing_js_1.Tracing.trace;
@@ -709,6 +711,42 @@ test("Two scopes run independently", () => {
         assert_1.default.strictEqual(crud.getPipelineState(db, "b").status, "completed");
     });
 });
+test("Parallel scopes with same agent name: independent actions", () => {
+    withDb((db) => {
+        engine.createPipeline(db, "auth", "impl", [{ type: "VERIFY", agent: "reviewer", maxRounds: 3, },]);
+        engine.createPipeline(db, "ui", "impl", [{ type: "VERIFY", agent: "reviewer", maxRounds: 3, },]);
+        const actions = engine.getAllNextActions(db);
+        assert_1.default.strictEqual(actions.length, 2, "Both scopes should have actions");
+        const scopes = actions.map(a => a.scope).sort();
+        assert_1.default.deepStrictEqual(scopes, ["auth", "ui",], "Both scopes present");
+        // REVISE one, PASS the other
+        engine.step(db, "auth", "REVISE");
+        engine.step(db, "ui", "PASS");
+        assert_1.default.strictEqual(crud.getPipelineState(db, "auth").status, "revision");
+        assert_1.default.strictEqual(crud.getPipelineState(db, "ui").status, "completed");
+        // After REVISE, step is in "revise" status — reviewer is no longer active (it's source's turn)
+        const roleAuth = engine.resolveRole(db, "auth", "reviewer");
+        assert_1.default.strictEqual(roleAuth, "ungated", "reviewer ungated during revision (source's turn)");
+        // Source agent resolves correctly during revision
+        const roleSource = engine.resolveRole(db, "auth", "impl");
+        assert_1.default.strictEqual(roleSource, "source", "source agent resolves as source during revision");
+        // resolveRole without scope prefers revision pipeline for source resolution
+        const roleNoScope = engine.resolveRole(db, "", "impl");
+        assert_1.default.strictEqual(roleNoScope, "source", "no-scope fallback finds source in revision pipeline");
+    });
+});
+test("findAgentScope prefers active pipeline", () => {
+    withDb((db) => {
+        engine.createPipeline(db, "old", "impl", [{ type: "VERIFY", agent: "reviewer", maxRounds: 3, },]);
+        engine.step(db, "old", "PASS"); // complete
+        engine.createPipeline(db, "new", "impl", [{ type: "VERIFY", agent: "reviewer", maxRounds: 3, },]);
+        // Register reviewer in both scopes
+        crud.registerAgent(db, "old", "reviewer", "old/reviewer.md");
+        crud.registerAgent(db, "new", "reviewer", "new/reviewer.md");
+        const found = crud.findAgentScope(db, "reviewer");
+        assert_1.default.strictEqual(found, "new", "Should prefer scope with active pipeline");
+    });
+});
 // ══════════════════════════════════════════════════════════════════════
 // Hook integration: pipeline-block.js patterns
 // ══════════════════════════════════════════════════════════════════════
@@ -1320,6 +1358,101 @@ test("UNKNOWN artifact + semantic FAIL: hook retries via retryGateAgent (regress
         fs_1.default.rmSync(tmpDir, { recursive: true, });
     }
     catch {
+    }
+});
+// ══════════════════════════════════════════════════════════════════════
+// GateToggle — toggle command parsing + SessionManager marker
+// ══════════════════════════════════════════════════════════════════════
+console.log("\n=== GateToggle: parseToggleCommand ===");
+test("parseToggleCommand matches 'gate off'", () => {
+    assert_1.default.strictEqual((0, GateToggle_js_1.parseToggleCommand)("gate off"), "off");
+});
+test("parseToggleCommand matches 'gate on'", () => {
+    assert_1.default.strictEqual((0, GateToggle_js_1.parseToggleCommand)("gate on"), "on");
+});
+test("parseToggleCommand matches 'gates off' (plural)", () => {
+    assert_1.default.strictEqual((0, GateToggle_js_1.parseToggleCommand)("gates off"), "off");
+});
+test("parseToggleCommand matches 'gates on' (plural)", () => {
+    assert_1.default.strictEqual((0, GateToggle_js_1.parseToggleCommand)("gates on"), "on");
+});
+test("parseToggleCommand matches 'gate status'", () => {
+    assert_1.default.strictEqual((0, GateToggle_js_1.parseToggleCommand)("gate status"), "status");
+});
+test("parseToggleCommand matches 'gates status' (plural)", () => {
+    assert_1.default.strictEqual((0, GateToggle_js_1.parseToggleCommand)("gates status"), "status");
+});
+test("parseToggleCommand is case-insensitive", () => {
+    assert_1.default.strictEqual((0, GateToggle_js_1.parseToggleCommand)("GATE OFF"), "off");
+    assert_1.default.strictEqual((0, GateToggle_js_1.parseToggleCommand)("Gate On"), "on");
+    assert_1.default.strictEqual((0, GateToggle_js_1.parseToggleCommand)("GATES STATUS"), "status");
+});
+test("parseToggleCommand trims whitespace", () => {
+    assert_1.default.strictEqual((0, GateToggle_js_1.parseToggleCommand)("  gate off  "), "off");
+});
+test("parseToggleCommand rejects partial matches", () => {
+    assert_1.default.strictEqual((0, GateToggle_js_1.parseToggleCommand)("gate offering"), null);
+    assert_1.default.strictEqual((0, GateToggle_js_1.parseToggleCommand)("the gate off"), null);
+    assert_1.default.strictEqual((0, GateToggle_js_1.parseToggleCommand)("gateoff"), null);
+});
+test("parseToggleCommand rejects unrelated prompts", () => {
+    assert_1.default.strictEqual((0, GateToggle_js_1.parseToggleCommand)("fix the bug"), null);
+    assert_1.default.strictEqual((0, GateToggle_js_1.parseToggleCommand)(""), null);
+    assert_1.default.strictEqual((0, GateToggle_js_1.parseToggleCommand)("gate"), null);
+});
+console.log("\n=== SessionManager: gate toggle marker ===");
+test("isGateDisabled returns false when no marker", () => {
+    const origCwd = process.cwd();
+    const dir = tmpDir();
+    process.chdir(dir);
+    try {
+        assert_1.default.strictEqual(SessionManager_js_1.SessionManager.isGateDisabled(), false);
+    }
+    finally {
+        process.chdir(origCwd);
+        cleanup(dir);
+    }
+});
+test("setGateDisabled(true) creates marker, isGateDisabled returns true", () => {
+    const origCwd = process.cwd();
+    const dir = tmpDir();
+    process.chdir(dir);
+    try {
+        SessionManager_js_1.SessionManager.setGateDisabled(true);
+        assert_1.default.strictEqual(SessionManager_js_1.SessionManager.isGateDisabled(), true);
+        assert_1.default.ok(fs_1.default.existsSync(SessionManager_js_1.SessionManager.gateDisabledMarker()));
+    }
+    finally {
+        process.chdir(origCwd);
+        cleanup(dir);
+    }
+});
+test("setGateDisabled(false) removes marker, isGateDisabled returns false", () => {
+    const origCwd = process.cwd();
+    const dir = tmpDir();
+    process.chdir(dir);
+    try {
+        SessionManager_js_1.SessionManager.setGateDisabled(true);
+        assert_1.default.strictEqual(SessionManager_js_1.SessionManager.isGateDisabled(), true);
+        SessionManager_js_1.SessionManager.setGateDisabled(false);
+        assert_1.default.strictEqual(SessionManager_js_1.SessionManager.isGateDisabled(), false);
+    }
+    finally {
+        process.chdir(origCwd);
+        cleanup(dir);
+    }
+});
+test("setGateDisabled(false) is no-op when marker absent", () => {
+    const origCwd = process.cwd();
+    const dir = tmpDir();
+    process.chdir(dir);
+    try {
+        SessionManager_js_1.SessionManager.setGateDisabled(false);
+        assert_1.default.strictEqual(SessionManager_js_1.SessionManager.isGateDisabled(), false);
+    }
+    finally {
+        process.chdir(origCwd);
+        cleanup(dir);
     }
 });
 // ══════════════════════════════════════════════════════════════════════
