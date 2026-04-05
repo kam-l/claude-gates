@@ -365,7 +365,7 @@ function implicitSourceCheck(content: string, artifactPath: string,): string | n
 
 // ── Handler (exported for hook-handler barrel + testing) ────────────
 
-export function onSubagentStop(data: any,): void
+export async function onSubagentStop(data: any,): Promise<void>
 {
   const isContinuation = !!data.stop_hook_active;
 
@@ -607,12 +607,13 @@ export function onSubagentStop(data: any,): void
     // ── Langfuse tracing ──
     const { langfuse, enabled, } = Tracing.init();
     const trace = Tracing.getOrCreateTrace(langfuse, enabled, db, scope!, sessionId,);
+    const scopeSpan = Tracing.scopeSpan(trace, scope!,);
 
     // ── Dispatch by role ──
 
     if (role === AgentRole.Transformer)
     {
-      handleTransformer(repo, pipelineEngine, scope!, bareAgentType, artifactPath, sessionDir, trace,);
+      handleTransformer(repo, pipelineEngine, scope!, bareAgentType, artifactPath, sessionDir, scopeSpan, enabled,);
     }
     else if (role === AgentRole.Source)
     {
@@ -627,7 +628,8 @@ export function onSubagentStop(data: any,): void
         scopeContext,
         sessionDir,
         sessionId,
-        trace,
+        scopeSpan,
+        enabled,
       );
     }
     else if (role === AgentRole.Verifier)
@@ -643,7 +645,8 @@ export function onSubagentStop(data: any,): void
         scopeContext,
         sessionDir,
         sessionId,
-        trace,
+        scopeSpan,
+        enabled,
         false,
       );
     }
@@ -660,11 +663,13 @@ export function onSubagentStop(data: any,): void
         scopeContext,
         sessionDir,
         sessionId,
-        trace,
+        scopeSpan,
+        enabled,
       );
     }
 
-    Tracing.flush(langfuse, enabled,);
+    scopeSpan.end();
+    await Tracing.flush(langfuse, enabled,);
   }
   finally
   {
@@ -676,15 +681,18 @@ export function onSubagentStop(data: any,): void
 
 // ── Entry point (thin wrapper) ──────────────────────────────────────
 
-try
+(async () =>
 {
-  onSubagentStop(JSON.parse(fs.readFileSync(0, "utf-8",),),);
-}
-catch (err: any)
-{
-  Messaging.log("⚠️", `Error: ${err?.message}`,);
-  process.exit(0,); // fail-open
-}
+  try
+  {
+    await onSubagentStop(JSON.parse(fs.readFileSync(0, "utf-8",),),);
+  }
+  catch (err: any)
+  {
+    Messaging.log("⚠️", `Error: ${err?.message}`,);
+    process.exit(0,); // fail-open
+  }
+})();
 
 // ── Role handlers ────────────────────────────────────────────────────
 
@@ -700,6 +708,7 @@ function handleSource(
   sessionDir: string,
   sessionId: string,
   trace: any,
+  enabled: boolean,
 )
 {
   // If pipeline is in revision state, reactivate the step FIRST.
@@ -716,8 +725,8 @@ function handleSource(
       logAction(sessionDir, nextAction, scope,);
       trace.span({
         name: "engine-step",
-        input: { role: "source", artifactVerdict, },
-        output: { action: nextAction && nextAction.action, },
+        input: { role: "source", agent: agentType, artifactVerdict, },
+        output: { action: nextAction?.action, nextAgent: (nextAction as any)?.agent, round: (nextAction as any)?.round, maxRounds: (nextAction as any)?.maxRounds, },
       },).end();
       return;
     }
@@ -734,7 +743,12 @@ function handleSource(
     recordVerdict(repo, scope, agentType, "FAIL",);
     const failAction = pipelineEngine.step(scope, { role: "source", artifactVerdict: "FAIL", },);
     logAction(sessionDir, failAction, scope,);
-    trace.span({ name: "implicit-check", input: { agent: agentType, }, output: { verdict: "FAIL", reason: implicitCheckResult, }, },).end();
+    trace.span({
+      name: "implicit-check",
+      input: { agent: agentType, artifactPath: path.basename(artifactPath,), artifactSize: artifactContent.length, },
+      output: { verdict: "FAIL", reason: implicitCheckResult, },
+    },).end();
+    Tracing.score(trace, enabled, "verdict", "FAIL", implicitCheckResult,);
     return;
   }
 
@@ -748,7 +762,12 @@ function handleSource(
     semanticResult = runSemanticCheck(activeStep.prompt, artifactContent, artifactPath, scopeContext, false, sessionId, scope,);
     writeAudit(sessionDir, scope, agentType, artifactPath, semanticResult,);
     qualityCheck = semanticResult?.check ?? semanticResult?.verdict ?? null;
-    trace.span({ name: "semantic-check", input: { prompt: activeStep.prompt, }, output: { verdict: qualityCheck, }, },).end();
+    trace.span({
+      name: "semantic-check",
+      input: { prompt: activeStep.prompt, agent: agentType, artifactPath: path.basename(artifactPath,), artifactSize: artifactContent.length, },
+      output: { verdict: qualityCheck, reason: semanticResult?.reason, },
+    },).end();
+    Tracing.score(trace, enabled, "verdict", qualityCheck || "UNKNOWN", semanticResult?.reason,);
   }
 
   // Source agents produce artifacts — they don't judge themselves.
@@ -769,8 +788,8 @@ function handleSource(
   logAction(sessionDir, nextAction, scope,);
   trace.span({
     name: "engine-step",
-    input: { role: "source", artifactVerdict: finalVerdict, },
-    output: { action: nextAction && nextAction.action, },
+    input: { role: "source", agent: agentType, artifactVerdict: finalVerdict, qualityCheck, },
+    output: { action: nextAction?.action, nextAgent: (nextAction as any)?.agent, round: (nextAction as any)?.round, maxRounds: (nextAction as any)?.maxRounds, },
   },).end();
 
   if (finalVerdict === "FAIL")
@@ -792,6 +811,7 @@ function handleVerifier(
   sessionDir: string,
   sessionId: string,
   trace: any,
+  enabled: boolean,
   _mcpVerdictPreExisted: boolean,
 )
 {
@@ -812,7 +832,12 @@ function handleVerifier(
 
   // Quality check: prefer MCP `check` field, fall back to semantic verdict (legacy Result: line)
   const qualityCheck = semanticResult?.check ?? semanticResult?.verdict ?? null;
-  trace.span({ name: "semantic-check", input: { prompt: "implicit-verifier-check", }, output: { verdict: qualityCheck, }, },).end();
+  trace.span({
+    name: "semantic-check",
+    input: { prompt: "implicit-verifier-check", agent: agentType, artifactPath: path.basename(artifactPath,), artifactSize: artifactContent.length, },
+    output: { verdict: qualityCheck, reason: semanticResult?.reason, },
+  },).end();
+  Tracing.score(trace, enabled, "verdict", qualityCheck || "UNKNOWN", semanticResult?.reason,);
 
   // Record raw artifact verdict — engine and DB must agree on what the reviewer said.
   recordVerdict(repo, scope, agentType, artifactVerdict,);
@@ -833,9 +858,10 @@ function handleVerifier(
     logAction(sessionDir, retryAction, scope,);
     trace.span({
       name: "engine-step",
-      input: { role: "verifier", artifactVerdict, qualityCheck, },
-      output: { action: retryAction && retryAction.action, },
+      input: { role: "verifier", agent: agentType, artifactVerdict, qualityCheck, },
+      output: { action: retryAction?.action, nextAgent: (retryAction as any)?.agent, round: (retryAction as any)?.round, maxRounds: (retryAction as any)?.maxRounds, },
     },).end();
+    Tracing.score(trace, enabled, "verdict", "FAIL", "quality check failed, retrying reviewer",);
     return;
   }
 
@@ -848,8 +874,11 @@ function handleVerifier(
     action: nextAction && nextAction.action,
   },);
   logAction(sessionDir, nextAction, scope,);
-  trace.span({ name: "engine-step", input: { role: "verifier", artifactVerdict, }, output: { action: nextAction && nextAction.action, }, },)
-    .end();
+  trace.span({
+    name: "engine-step",
+    input: { role: "verifier", agent: agentType, artifactVerdict, qualityCheck, },
+    output: { action: nextAction?.action, nextAgent: (nextAction as any)?.agent, round: (nextAction as any)?.round, maxRounds: (nextAction as any)?.maxRounds, },
+  },).end();
 }
 
 function handleFixer(
@@ -864,6 +893,7 @@ function handleFixer(
   sessionDir: string,
   sessionId: string,
   trace: any,
+  enabled: boolean,
 )
 {
   // Implicit semantic check for fixers
@@ -880,7 +910,12 @@ function handleFixer(
 
   const qualityCheck = semanticResult?.check ?? semanticResult?.verdict ?? null;
   recordVerdict(repo, scope, agentType, artifactVerdict,);
-  trace.span({ name: "semantic-check", input: { prompt: "implicit-fixer-check", }, output: { verdict: qualityCheck, }, },).end();
+  trace.span({
+    name: "semantic-check",
+    input: { prompt: "implicit-fixer-check", agent: agentType, artifactPath: path.basename(artifactPath,), artifactSize: artifactContent.length, },
+    output: { verdict: qualityCheck, reason: semanticResult?.reason, },
+  },).end();
+  Tracing.score(trace, enabled, "verdict", qualityCheck || "UNKNOWN", semanticResult?.reason,);
 
   // Single engine call — engine always reactivates the revision step for fixers
   const nextAction = pipelineEngine.step(scope, { role: "fixer", artifactVerdict, },);
@@ -892,8 +927,11 @@ function handleFixer(
     action: nextAction && nextAction.action,
   },);
   logAction(sessionDir, nextAction, scope,);
-  trace.span({ name: "engine-step", input: { role: "fixer", artifactVerdict, }, output: { action: nextAction && nextAction.action, }, },)
-    .end();
+  trace.span({
+    name: "engine-step",
+    input: { role: "fixer", agent: agentType, artifactVerdict, qualityCheck, },
+    output: { action: nextAction?.action, nextAgent: (nextAction as any)?.agent, round: (nextAction as any)?.round, maxRounds: (nextAction as any)?.maxRounds, },
+  },).end();
 }
 
 function handleTransformer(
@@ -904,6 +942,7 @@ function handleTransformer(
   artifactPath: string,
   sessionDir: string,
   trace: any,
+  enabled: boolean,
 )
 {
   // Transformers auto-pass — no verdict check, no semantic check.
@@ -916,7 +955,12 @@ function handleTransformer(
     action: nextAction && nextAction.action,
   },);
   logAction(sessionDir, nextAction, scope,);
-  trace.span({ name: "engine-step", input: { role: "transformer", }, output: { action: nextAction && nextAction.action, }, },).end();
+  trace.span({
+    name: "engine-step",
+    input: { role: "transformer", agent: agentType, },
+    output: { action: nextAction?.action, nextAgent: (nextAction as any)?.agent, round: (nextAction as any)?.round, maxRounds: (nextAction as any)?.maxRounds, },
+  },).end();
+  Tracing.score(trace, enabled, "verdict", "PASS",);
 }
 
 // ── Logging helper ───────────────────────────────────────────────────

@@ -41,7 +41,7 @@ function sourceReason(act) {
     }
     return ".";
 }
-function onPreToolUse(data) {
+async function onPreToolUse(data) {
     const sessionId = data.session_id || "";
     if (!sessionId) {
         process.exit(0);
@@ -66,20 +66,8 @@ function onPreToolUse(data) {
         const repo = new PipelineRepository_1.PipelineRepository(db);
         const pipelineEngine = new PipelineEngine_1.PipelineEngine(repo);
         actions = pipelineEngine.getAllNextActions();
-        // Stash trace IDs before closing DB (Langfuse needs them after db.close)
+        // Trace ID is now deterministic from sessionId — no DB stash needed
         traceScopes = {};
-        if (actions && actions.length > 0) {
-            for (const act of actions) {
-                try {
-                    const state = repo.getPipelineState(act.scope);
-                    if (state && state.trace_id) {
-                        traceScopes[act.scope] = state.trace_id;
-                    }
-                }
-                catch {
-                }
-            }
-        }
     }
     finally {
         db.close();
@@ -159,19 +147,18 @@ function onPreToolUse(data) {
             parts.push(`${verb} ${agent} (scope=${act.scope})${reason}`);
         }
     }
-    // Langfuse: trace block decisions (fire-and-forget, no DB needed — trace IDs stashed earlier)
+    // Langfuse: trace block decisions — session-level trace with scope spans
     try {
         const { langfuse, enabled, } = Tracing_1.Tracing.init();
         if (enabled) {
+            const traceId = Tracing_1.Tracing.sessionTraceId(sessionId);
+            const trace = langfuse.trace({ id: traceId, name: `session`, sessionId, });
             for (const act of actions) {
-                const traceId = traceScopes[act.scope];
-                if (!traceId) {
-                    continue;
-                }
-                const trace = langfuse.trace({ id: traceId, name: `pipeline:${act.scope}`, sessionId, });
-                trace.span({ name: "tool-blocked", input: { toolName, scope: act.scope, expectedAgent: act.agent, }, }).end();
+                const scopeSpan = Tracing_1.Tracing.scopeSpan(trace, act.scope);
+                scopeSpan.span({ name: "tool-blocked", input: { toolName, scope: act.scope, expectedAgent: act.agent, }, }).end();
+                scopeSpan.end();
             }
-            Tracing_1.Tracing.flush(langfuse, enabled);
+            await Tracing_1.Tracing.flush(langfuse, enabled);
         }
     }
     catch {
@@ -188,10 +175,12 @@ function onPreToolUse(data) {
     process.exit(0);
 }
 // ── Entry point (thin wrapper) ──────────────────────────────────────
-try {
-    onPreToolUse(JSON.parse(fs_1.default.readFileSync(0, "utf-8")));
-}
-catch {
-    process.exit(0); // fail-open
-}
+(async () => {
+    try {
+        await onPreToolUse(JSON.parse(fs_1.default.readFileSync(0, "utf-8")));
+    }
+    catch {
+        process.exit(0); // fail-open
+    }
+})();
 //# sourceMappingURL=PipelineBlock.js.map

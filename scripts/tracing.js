@@ -36,37 +36,70 @@ class Tracing {
             return { langfuse: NOOP, enabled: false, };
         }
     }
+    /**
+     * Session-level trace. Deterministic ID from sessionId — all scopes in one session share the same trace.
+     * Still writes trace_id to pipeline_state for PipelineBlock.ts compatibility.
+     */
     static getOrCreateTrace(langfuse, enabled, db, scope, sessionId) {
         if (!enabled) {
             return NOOP;
         }
         try {
+            const traceId = Tracing.sessionTraceId(sessionId);
+            // Write to pipeline_state so PipelineBlock.ts can read it (backward compat)
             const repo = new PipelineRepository_1.PipelineRepository(db);
-            let traceId = repo.getTraceId(scope);
-            if (traceId === null && !repo.getPipelineState(scope)) {
-                return NOOP;
-            }
-            if (!traceId) {
-                traceId = crypto_1.default.randomUUID();
+            if (repo.getPipelineState(scope)) {
                 repo.setTraceId(scope, traceId);
+            }
+            else {
+                return NOOP;
             }
             return langfuse.trace({
                 id: traceId,
-                name: `pipeline:${scope}`,
+                name: `session`,
                 sessionId: sessionId,
-                metadata: { scope, },
             });
         }
         catch {
             return NOOP;
         }
     }
-    static flush(langfuse, enabled) {
+    /**
+     * Deterministic trace ID from sessionId — no DB lookup needed.
+     */
+    static sessionTraceId(sessionId) {
+        return crypto_1.default.createHash("sha256").update(sessionId).digest("hex").slice(0, 32);
+    }
+    /**
+     * Scope-level span under the session trace. All handler spans nest under this.
+     */
+    static scopeSpan(trace, scope) {
+        return trace.span({ name: `scope:${scope}`, });
+    }
+    /**
+     * Categorical score for a verdict event.
+     */
+    static score(trace, enabled, name, value, comment) {
         if (!enabled) {
             return;
         }
         try {
-            langfuse.shutdownAsync().catch(() => { });
+            trace.score({
+                name,
+                value,
+                dataType: "CATEGORICAL",
+                comment: comment || undefined,
+            });
+        }
+        catch {
+        }
+    }
+    static async flush(langfuse, enabled) {
+        if (!enabled) {
+            return;
+        }
+        try {
+            await langfuse.shutdownAsync();
         }
         catch {
         }
