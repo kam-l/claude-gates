@@ -2,6 +2,12 @@
 
 All notable changes to claude-gates. Grouped by minor version — patch releases omitted unless noteworthy.
 
+## [4.4.0] — 2026-04-05
+
+- **`gates on/off/status` toggle** — type `gates off` in the prompt to disable all pipeline gates project-wide; `gates on` to re-enable, `gates status` to check. UserPromptSubmit hook intercepts the command before it reaches the model. All 6 pipeline hooks respect the marker and exit early when disabled.
+- **Plan gate works by default** — no setup required. Every `ExitPlanMode` is automatically gated by the plan-gate hook. Trivial plans (<=20 lines) bypass automatically; a safety valve auto-allows after 3 blocked attempts.
+- **Pipeline is for multi-agent orchestration** — the `verification:` frontmatter pipeline is designed for agents that spawn other agents. It enforces a rigid workflow (source → check → verify → fix) across the entire agent lifecycle, not individual tool calls.
+
 ## [3.6.0] — 2026-03-31
 
 - **Gater v2** — adversarial review lenses (accuracy, completeness, fit, freshness, redundancy), actionable block messages, verification injection ([#1](https://github.com/kam-l/claude-gates/pull/1))
