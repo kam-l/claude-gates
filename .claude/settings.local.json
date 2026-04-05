@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__claude-gates__gate_status",
+      "mcp__claude-gates__gate_verdict"
+    ]
+  }
+}
