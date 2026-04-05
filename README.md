@@ -5,7 +5,7 @@ Quality gates for Claude Code agents. Your agents shall not pass without earning
 <p align="center">
   <a href="https://code.claude.com/docs/en/plugins"><img src="https://img.shields.io/badge/Claude_Code-plugin-blueviolet" alt="Claude Code plugin" /></a>
   <a href="https://github.com/kam-l/claude-gates/actions/workflows/test.yml"><img src="https://github.com/kam-l/claude-gates/actions/workflows/test.yml/badge.svg" alt="Tests" /></a>
-  <a href="https://codecov.io/gh/kam-l/claude-gates"><img src="https://codecov.io/gh/kam-l/claude-gates/branch/master/graph/badge.svg" alt="Coverage" /></a>
+  <a href="https://codecov.io/gh/kam-l/claude-gates"><img src="https://codecov.io/gh/kam-l/claude-gates/branch/main/graph/badge.svg" alt="Coverage" /></a>
   <a href="https://github.com/kam-l/claude-gates/releases"><img src="https://img.shields.io/github/v/tag/kam-l/claude-gates?label=version" alt="Version" /></a>
 </p>
 
@@ -13,6 +13,8 @@ Quality gates for Claude Code agents. Your agents shall not pass without earning
   <a href="#install">Install</a> ·
   <a href="#gates">Gates</a> ·
   <a href="#pipelines">Pipelines</a> ·
+  <a href="#example">Example</a> ·
+  <a href="#observability">Observability</a> ·
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
@@ -32,7 +34,7 @@ Quality gates for Claude Code agents. Your agents shall not pass without earning
 
 <details>
 <summary>Flame of Udûn</summary>
-<img src="gandalf.png" alt="You shall not pass!" width="400">
+<img align="center" src="gandalf.png" alt="You shall not pass!" width="400">
 </details>
 
 ## Install
@@ -91,7 +93,7 @@ verification:                                # Ordered pipeline steps
   - ["Does this show real implementation?"]  # Gater judges agent's output file
   - [cleaner!, 1]                            # Separate agent forced to follow this one
   - [reviewer?, 3]                           # Other agent verifies work so far - 3 rounds max
-  - [tester?, 3, fixer!]                   # Another agent verifies and yet another fixes
+  - [tester?, 3, fixer!]                     # Another agent verifies and yet another fixes
   - [/commit, Bash]                          # Orchestrator must run command with allowed tools
 ---
 ```

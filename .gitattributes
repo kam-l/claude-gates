@@ -1,1 +1,2 @@
-scripts/*.js linguist-generated=true
+scripts/**/*.js linguist-generated=true
+scripts/**/*.js.map linguist-generated=true
