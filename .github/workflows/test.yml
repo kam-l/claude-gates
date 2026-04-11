@@ -1,7 +1,7 @@
 name: Tests
 on:
   push:
-    branches: [main]
+    branches: [main, feat/ts-migration-unblock]
   pull_request:
     branches: [main]
 
@@ -13,11 +13,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - run: npm install
       - run: npm run build
       - run: git diff --exit-code scripts/
       - run: npx c8 --reporter=text --reporter=lcov node scripts/PipelineTest.js
       - run: npx c8 --reporter=text --reporter=lcov --clean=false node scripts/PipelineE2eTest.js
+      - run: PYTHONPATH=src python -m pytest tests/ -v --tb=short
       - uses: codecov/codecov-action@v4
         with:
           files: coverage/lcov.info
