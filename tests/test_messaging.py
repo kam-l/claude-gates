@@ -1,8 +1,5 @@
-"""Tests for messaging.py — port of Messaging.ts"""
-import io
 import os
 import sys
-import tempfile
 
 import pytest
 
@@ -93,14 +90,13 @@ class TestDrainNotifications:
         drain_notifications(str(tmp_path))
         assert not notification_file.exists()
 
-    def test_drain_returns_empty_string_when_file_empty(self, tmp_path):
+    def test_drain_returns_none_when_file_empty(self, tmp_path):
         notification_file = tmp_path / NOTIFICATION_FILE
         notification_file.write_text("", encoding="utf-8")
         result = drain_notifications(str(tmp_path))
-        # Empty file: returns empty string, not None
-        assert result == ""
+        assert result is None
 
-    def test_drain_is_atomic_second_call_returns_none(self, tmp_path):
+    def test_drain_second_call_returns_none(self, tmp_path):
         notification_file = tmp_path / NOTIFICATION_FILE
         notification_file.write_text("[ClaudeGates] 📢 hello\n", encoding="utf-8")
         drain_notifications(str(tmp_path))
@@ -122,7 +118,6 @@ class TestLog:
     def test_log_has_no_timestamp(self, capsys):
         log("⚡", "msg")
         captured = capsys.readouterr()
-        # Ensure output is exactly the formatted message, no extra fields
         assert captured.err == "[ClaudeGates] ⚡ msg\n"
 
 
@@ -132,3 +127,27 @@ class TestConstants:
 
     def test_notification_file_constant(self):
         assert NOTIFICATION_FILE == ".pipeline-notifications"
+
+
+class TestSourceComments:
+    """Verify required comments are present in messaging.py source."""
+
+    def _read_source(self) -> str:
+        import pathlib
+        src = pathlib.Path(__file__).parent.parent / "src" / "claude_gates" / "messaging.py"
+        return src.read_text(encoding="utf-8")
+
+    def test_toctou_comment_present_above_drain_notifications(self):
+        source = self._read_source()
+        toctou_comment = "# Note: exists+open+unlink is not truly atomic (TOCTOU). Acceptable since hooks run sequentially."
+        assert toctou_comment in source
+
+    def test_toctou_comment_immediately_above_drain_function(self):
+        source = self._read_source()
+        expected = "# Note: exists+open+unlink is not truly atomic (TOCTOU). Acceptable since hooks run sequentially.\ndef drain_notifications"
+        assert expected in source
+
+    def test_ts_match_comment_on_return_line(self):
+        source = self._read_source()
+        ts_comment = "return content or None  # Match TS: content || null — empty string is falsy"
+        assert ts_comment in source
