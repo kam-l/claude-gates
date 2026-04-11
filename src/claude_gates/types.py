@@ -1,18 +1,8 @@
-"""
-Port of src/types/Enums.ts and src/types/Interfaces.ts.
-
-Enums: 5 StrEnum classes (Python 3.11+).
-TypedDicts: ~12 definitions including discriminated unions for Action and VerificationStep.
-"""
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import List, Literal, Optional, TypedDict, Union
+from typing import Any, Dict, List, Literal, Optional, TypedDict, Union
 
-
-# ---------------------------------------------------------------------------
-# Enums — StrEnum (Python 3.11+); member == string value
-# ---------------------------------------------------------------------------
 
 class Verdict(StrEnum):
     Pass = "PASS"
@@ -54,10 +44,6 @@ class AgentRole(StrEnum):
     Ungated = "ungated"
 
 
-# ---------------------------------------------------------------------------
-# VerificationStep — discriminated union of 4 step variants
-# ---------------------------------------------------------------------------
-
 class ICheckStep(TypedDict):
     type: Literal["CHECK"]
     prompt: str
@@ -85,10 +71,6 @@ class ITransformStep(TypedDict):
 VerificationStep = Union[ICheckStep, IVerifyStep, IVerifyWithFixerStep, ITransformStep]
 
 
-# ---------------------------------------------------------------------------
-# IPipelineState / IPipelineStep
-# ---------------------------------------------------------------------------
-
 class IPipelineState(TypedDict):
     scope: str
     source_agent: str
@@ -114,10 +96,6 @@ class IPipelineStep(TypedDict):
     round: int
     source_agent: str
 
-
-# ---------------------------------------------------------------------------
-# Action — discriminated union of 5 action TypedDicts + None
-# ---------------------------------------------------------------------------
 
 class SpawnAction(TypedDict):
     action: Literal["spawn"]
@@ -157,10 +135,6 @@ class FailedAction(TypedDict):
 Action = Union[SpawnAction, SourceAction, SemanticAction, DoneAction, FailedAction, None]
 
 
-# ---------------------------------------------------------------------------
-# Remaining interfaces
-# ---------------------------------------------------------------------------
-
 class IStepInput(TypedDict):
     role: Optional[str]
     artifactVerdict: str
@@ -185,11 +159,11 @@ class IAgentSummary(TypedDict):
 class IHookInput(TypedDict, total=False):
     session_id: str
     tool_name: str
-    tool_input: dict
+    tool_input: Dict[str, Any]
     tool_result: str
     agent_type: str
     agent_id: str
     agent_transcript_path: str
     last_assistant_message: str
-    error: Optional[str]
+    error: str
     prompt: str

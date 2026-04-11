@@ -1,13 +1,3 @@
-"""
-Tests for types.py — port of Enums.ts and Interfaces.ts.
-
-Acceptance criteria (spec.md):
-1. StrEnum values equal their string representation (exact TS values)
-2. PascalCase enum member names
-3. Discriminated Action union with Literal discriminators
-4. Discriminated VerificationStep union with Literal type discriminators
-5. All TS interfaces ported as TypedDicts
-"""
 import os
 import sys
 import unittest
@@ -165,7 +155,6 @@ class TestActionUnion(unittest.TestCase):
     """AC3: Discriminated Action union — 5 TypedDicts + None."""
 
     def test_spawn_action_literal_discriminator(self):
-        """SpawnAction has action: Literal['spawn']."""
         hints = get_type_hints(SpawnAction, include_extras=True)
         self.assertIn("action", hints)
         # Verify we can construct one and it type-checks
@@ -214,12 +203,10 @@ class TestActionUnion(unittest.TestCase):
         self.assertEqual(failed["action"], "failed")
 
     def test_action_union_includes_none(self):
-        """Action = Union[SpawnAction, ..., None] — None is a valid value."""
         action: Action = None
         self.assertIsNone(action)
 
     def test_action_union_accepts_each_variant(self):
-        """Action type accepts all 5 variants."""
         actions = [
             {"action": "spawn", "agent": "a", "scope": "s", "step": {}, "round": 1, "maxRounds": 3},
             {"action": "source", "agent": "a", "scope": "s", "step": {}},
@@ -256,7 +243,6 @@ class TestVerificationStepUnion(unittest.TestCase):
         self.assertEqual(step["type"], "TRANSFORM")
 
     def test_verification_step_union_exported(self):
-        """VerificationStep is defined as Union of the 4 variants."""
         import typing
         args = typing.get_args(VerificationStep)
         self.assertEqual(len(args), 4)
@@ -374,7 +360,6 @@ class TestIHookInput(unittest.TestCase):
     """AC5: IHookInput TypedDict — all fields optional (NotRequired or total=False)."""
 
     def test_empty_dict_is_valid(self):
-        """All IHookInput fields are optional — empty dict must be valid."""
         hook_input: IHookInput = {}
         self.assertEqual(hook_input, {})
 
@@ -388,13 +373,12 @@ class TestIHookInput(unittest.TestCase):
             "agent_id": "agent-abc",
             "agent_transcript_path": "/path/to/transcript",
             "last_assistant_message": "Done.",
-            "error": None,
+            "error": "something went wrong",
             "prompt": "Do something",
         }
         self.assertEqual(hook_input["session_id"], "sess-123")
 
     def test_partial_fields_valid(self):
-        """Partial construction is valid (not all fields required)."""
         hook_input: IHookInput = {"tool_name": "Read"}
         self.assertEqual(hook_input["tool_name"], "Read")
 
