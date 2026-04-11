@@ -16,6 +16,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - run: pip install pytest
       - run: npm install
       - run: npm run build
       - run: git diff --exit-code scripts/
