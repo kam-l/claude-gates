@@ -268,7 +268,7 @@ class TestSemanticCheckOverridePassToRevise(unittest.TestCase):
 
             with patch("src.claude_gates.verification._run_semantic_check", return_value=semantic_result), \
                  patch("src.claude_gates.verification._write_audit"), \
-                 patch("src.claude_gates.verification.trace"):
+                 patch("claude_gates.tracing.trace"):
                 _handle_verifier(
                     repo=repo,
                     engine=engine,
@@ -419,7 +419,7 @@ class TestHandlerRouting(unittest.TestCase):
             with open(artifact, "w") as f:
                 f.write("# Cleaned\n- done\n")
 
-            with patch("src.claude_gates.verification.trace"):
+            with patch("claude_gates.tracing.trace"):
                 _handle_transformer(
                     repo=repo,
                     engine=engine,
@@ -466,7 +466,7 @@ class TestHandlerRouting(unittest.TestCase):
 
             with patch("src.claude_gates.verification._run_semantic_check", side_effect=fake_semantic), \
                  patch("src.claude_gates.verification._write_audit"), \
-                 patch("src.claude_gates.verification.trace"):
+                 patch("claude_gates.tracing.trace"):
                 _handle_fixer(
                     repo=repo,
                     engine=engine,

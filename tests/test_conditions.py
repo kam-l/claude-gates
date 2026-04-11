@@ -1,30 +1,9 @@
-"""
-Tests for conditions.py — PreToolUse:Agent hook.
-
-Acceptance criteria from spec.md:
-1. Conditions timeout = fail-open (allow)
-2. Step enforcement blocks wrong agent with guidance
-3. Windows claude command resolution (shutil.which)
-4. CLAUDECODE="" prevents recursive hooks
-5. Reserved scope rejection
-
-Edge cases from task.md:
-- Gate disabled → return {}
-- Scope extraction from prompt
-- No agent .md file found → return {}
-- Resume scenario → allow
-- No scope + no CG fields → return {}
-- No scope + requires_scope → block
-"""
-
 import os
-import re
 import shutil
-import sqlite3
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -35,7 +14,6 @@ from src.claude_gates.session import open_database
 
 
 def _make_session_dir(root: str) -> str:
-    """Create a session dir and initialize schema, return path."""
     session_dir = os.path.join(root, "sessions", "abc12345")
     os.makedirs(session_dir, exist_ok=True)
     conn = open_database(session_dir)
@@ -45,7 +23,6 @@ def _make_session_dir(root: str) -> str:
 
 
 def _write_agent_md(root: str, agent_name: str, content: str) -> str:
-    """Write an agent .md file to project_root/.claude/agents/<name>.md."""
     agents_dir = os.path.join(root, ".claude", "agents")
     os.makedirs(agents_dir, exist_ok=True)
     path = os.path.join(agents_dir, f"{agent_name}.md")
@@ -84,7 +61,6 @@ Reviewer agent.
 
 
 def _run_conditions_check(data: dict, session_dir: str, project_root: str) -> dict:
-    """Helper: run on_conditions_check with common patches applied."""
     from src.claude_gates import conditions
     with patch("src.claude_gates.conditions.is_gate_disabled", return_value=False), \
          patch("src.claude_gates.conditions.get_session_dir", return_value=session_dir), \
@@ -97,8 +73,6 @@ def _run_conditions_check(data: dict, session_dir: str, project_root: str) -> di
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestGateDisabled(unittest.TestCase):
-    """Gate disabled → return {}."""
-
     def test_gate_disabled_returns_empty(self):
         from src.claude_gates import conditions
         with patch("src.claude_gates.conditions.is_gate_disabled", return_value=True):
@@ -106,7 +80,6 @@ class TestGateDisabled(unittest.TestCase):
         self.assertEqual(result, {})
 
     def test_gate_disabled_short_circuits(self):
-        """When gate is disabled, no other processing should occur."""
         from src.claude_gates import conditions
         with patch("src.claude_gates.conditions.is_gate_disabled", return_value=True), \
              patch("src.claude_gates.conditions.find_agent_md") as mock_find:
@@ -119,8 +92,6 @@ class TestGateDisabled(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestResumeScenario(unittest.TestCase):
-    """Resume scenario (tool_input.resume truthy) → allow without checks."""
-
     def test_resume_flag_allows(self):
         from src.claude_gates import conditions
         data = {
@@ -156,8 +127,6 @@ class TestResumeScenario(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestNoAgentType(unittest.TestCase):
-    """No agent_type in tool_input → return {}."""
-
     def test_no_agent_type_returns_empty(self):
         from src.claude_gates import conditions
         data = {
@@ -184,8 +153,6 @@ class TestNoAgentType(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestNoScopeNoCGFields(unittest.TestCase):
-    """No scope + agent has no pipeline CG fields → allow (backward compatible)."""
-
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
 
@@ -209,7 +176,6 @@ class TestNoScopeNoCGFields(unittest.TestCase):
         self.assertEqual(result, {})
 
     def test_no_scope_no_agent_md_allows(self):
-        """Agent not found + no scope → allow (no file, no gate)."""
         from src.claude_gates import conditions
         data = {
             "session_id": "abc12345",
@@ -230,8 +196,6 @@ class TestNoScopeNoCGFields(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestNoScopeRequiresScope(unittest.TestCase):
-    """No scope + agent has verification/conditions → block with guidance."""
-
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
 
@@ -278,8 +242,6 @@ class TestNoScopeRequiresScope(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestReservedScopeRejection(unittest.TestCase):
-    """Reserved scopes (_pending, _meta) → block."""
-
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
 
@@ -310,9 +272,6 @@ class TestReservedScopeRejection(unittest.TestCase):
         self.assertEqual(result.get("decision"), "block")
 
     def test_valid_scope_not_rejected(self):
-        """Normal scopes should not be blocked by this check."""
-        # This test needs a session dir so registration can succeed
-        # We patch out the DB / subprocess parts for simplicity
         from src.claude_gates import conditions
         _write_agent_md(self.tmp, "reviewer", GATED_AGENT_MD)
         session_dir = _make_session_dir(self.tmp)
@@ -328,9 +287,7 @@ class TestReservedScopeRejection(unittest.TestCase):
              patch("src.claude_gates.conditions.HOME", ""), \
              patch("src.claude_gates.conditions.get_session_dir", return_value=session_dir), \
              patch("src.claude_gates.conditions.subprocess") as mock_subprocess:
-            # No conditions block in GATED_AGENT_MD, so subprocess won't be called
             result = conditions.on_conditions_check(data)
-        # Should NOT be blocked (decision != block) for valid scope
         self.assertNotEqual(result.get("decision"), "block")
 
 
@@ -339,8 +296,6 @@ class TestReservedScopeRejection(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestNoAgentMdFile(unittest.TestCase):
-    """No agent .md file → return {} (ungated agent, no gate)."""
-
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.session_dir = _make_session_dir(self.tmp)
@@ -370,8 +325,6 @@ class TestNoAgentMdFile(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestConditionsTimeout(unittest.TestCase):
-    """AC1: subprocess.TimeoutExpired → fail-open (return {} or continue)."""
-
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.session_dir = _make_session_dir(self.tmp)
@@ -380,7 +333,6 @@ class TestConditionsTimeout(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_timeout_is_fail_open(self):
-        """TimeoutExpired → agent is allowed to proceed (not blocked)."""
         import subprocess
         _write_agent_md(self.tmp, "reviewer", AGENT_WITH_CONDITIONS_MD)
         from src.claude_gates import conditions
@@ -392,9 +344,6 @@ class TestConditionsTimeout(unittest.TestCase):
             },
         }
 
-        mock_proc = MagicMock()
-        mock_proc.stdout = ""
-        # Simulate TimeoutExpired
         mock_subprocess = MagicMock()
         mock_subprocess.run.side_effect = subprocess.TimeoutExpired(cmd="claude", timeout=30)
         mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
@@ -406,11 +355,9 @@ class TestConditionsTimeout(unittest.TestCase):
              patch("src.claude_gates.conditions.subprocess", mock_subprocess):
             result = conditions.on_conditions_check(data)
 
-        # Must not be a block decision — fail-open
         self.assertNotEqual(result.get("decision"), "block")
 
     def test_timeout_logs_to_stderr(self):
-        """TimeoutExpired → logs a warning to stderr."""
         import subprocess
         _write_agent_md(self.tmp, "reviewer", AGENT_WITH_CONDITIONS_MD)
         from src.claude_gates import conditions
@@ -437,7 +384,6 @@ class TestConditionsTimeout(unittest.TestCase):
             conditions.on_conditions_check(data)
 
         stderr_output = stderr_capture.getvalue()
-        # Should have some log output on stderr
         self.assertTrue(len(stderr_output) > 0)
 
 
@@ -446,8 +392,6 @@ class TestConditionsTimeout(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestStepEnforcement(unittest.TestCase):
-    """AC2: Active pipeline expecting 'reviewer' → block 'cleaner' spawn."""
-
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.session_dir = _make_session_dir(self.tmp)
@@ -456,7 +400,6 @@ class TestStepEnforcement(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _setup_pipeline(self, scope: str, expected_agent: str) -> None:
-        """Insert a pipeline in DB expecting expected_agent for scope."""
         conn = open_database(self.session_dir)
         PipelineRepository.init_schema(conn)
         repo = PipelineRepository(conn)
@@ -469,7 +412,6 @@ class TestStepEnforcement(unittest.TestCase):
         conn.close()
 
     def test_wrong_agent_is_blocked(self):
-        """Cleaner spawned when reviewer expected → block."""
         self._setup_pipeline("myproject", "reviewer")
         _write_agent_md(self.tmp, "cleaner", UNGATED_AGENT_MD)
         from src.claude_gates import conditions
@@ -508,7 +450,6 @@ class TestStepEnforcement(unittest.TestCase):
         self.assertIn("reviewer", reason)
 
     def test_correct_agent_is_allowed(self):
-        """Expected agent for scope → not blocked."""
         self._setup_pipeline("myproject", "reviewer")
         _write_agent_md(self.tmp, "reviewer", UNGATED_AGENT_MD)
         from src.claude_gates import conditions
@@ -532,8 +473,6 @@ class TestStepEnforcement(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestWindowsClaudeResolution(unittest.TestCase):
-    """AC3: shutil.which("claude") resolves full path; falls back to bare 'claude'."""
-
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.session_dir = _make_session_dir(self.tmp)
@@ -542,7 +481,6 @@ class TestWindowsClaudeResolution(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _run_with_conditions(self, which_return: str) -> None:
-        """Run conditions check with mocked which() and capture subprocess args."""
         _write_agent_md(self.tmp, "reviewer", AGENT_WITH_CONDITIONS_MD)
         from src.claude_gates import conditions
         data = {
@@ -621,8 +559,6 @@ class TestWindowsClaudeResolution(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestClaudeCodeEnvVar(unittest.TestCase):
-    """AC4: CLAUDECODE="" set in subprocess env to prevent recursive hooks."""
-
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.session_dir = _make_session_dir(self.tmp)
@@ -673,8 +609,6 @@ class TestClaudeCodeEnvVar(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestAgentRegistration(unittest.TestCase):
-    """After allow, agent is registered in DB and markers are written."""
-
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.session_dir = _make_session_dir(self.tmp)
@@ -683,7 +617,6 @@ class TestAgentRegistration(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_agent_registered_in_db(self):
-        """Allowed agent is registered in agents table."""
         _write_agent_md(self.tmp, "reviewer", GATED_AGENT_MD)
         from src.claude_gates import conditions
         data = {
@@ -708,7 +641,6 @@ class TestAgentRegistration(unittest.TestCase):
         self.assertIsNotNone(row)
 
     def test_running_marker_created(self):
-        """Running marker .running-{scope} is created."""
         _write_agent_md(self.tmp, "reviewer", GATED_AGENT_MD)
         from src.claude_gates import conditions
         data = {
@@ -728,7 +660,6 @@ class TestAgentRegistration(unittest.TestCase):
         self.assertTrue(os.path.exists(marker_path))
 
     def test_pending_scope_marker_created(self):
-        """Pending-scope marker .pending-scope-{agent} is created with scope content."""
         _write_agent_md(self.tmp, "reviewer", GATED_AGENT_MD)
         from src.claude_gates import conditions
         data = {
@@ -751,7 +682,6 @@ class TestAgentRegistration(unittest.TestCase):
         self.assertEqual(content, "myproject")
 
     def test_scope_dir_created(self):
-        """Scope directory is created under session_dir."""
         _write_agent_md(self.tmp, "reviewer", GATED_AGENT_MD)
         from src.claude_gates import conditions
         data = {
@@ -776,8 +706,6 @@ class TestAgentRegistration(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestAgentTypeNormalization(unittest.TestCase):
-    """Plugin prefix (claude-gates:reviewer) is stripped to bare name."""
-
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.session_dir = _make_session_dir(self.tmp)
@@ -802,9 +730,7 @@ class TestAgentTypeNormalization(unittest.TestCase):
              patch("src.claude_gates.conditions.get_session_dir", return_value=self.session_dir):
             result = conditions.on_conditions_check(data)
 
-        # Should have processed reviewer.md (not blocked because no wrong agent)
         self.assertNotEqual(result.get("decision"), "block")
-        # Agent registered as "reviewer" (bare name)
         conn = open_database(self.session_dir)
         cursor = conn.execute(
             "SELECT * FROM agents WHERE scope = 'myproject' AND agent = 'reviewer'"
@@ -819,8 +745,6 @@ class TestAgentTypeNormalization(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestConditionsCheckFail(unittest.TestCase):
-    """Conditions check returns FAIL → agent is blocked."""
-
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.session_dir = _make_session_dir(self.tmp)
@@ -829,7 +753,6 @@ class TestConditionsCheckFail(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_conditions_fail_blocks_agent(self):
-        """When claude -p returns Result: FAIL, the agent is blocked."""
         _write_agent_md(self.tmp, "reviewer", AGENT_WITH_CONDITIONS_MD)
         from src.claude_gates import conditions
         data = {
@@ -856,7 +779,6 @@ class TestConditionsCheckFail(unittest.TestCase):
         self.assertEqual(result.get("decision"), "block")
 
     def test_conditions_pass_allows_agent(self):
-        """When claude -p returns Result: PASS, agent proceeds."""
         _write_agent_md(self.tmp, "reviewer", AGENT_WITH_CONDITIONS_MD)
         from src.claude_gates import conditions
         data = {

@@ -1,10 +1,3 @@
-"""Pipeline verification hook — port of PipelineVerification.ts.
-
-SubagentStop hook: scope resolution, role dispatch, semantic checks,
-engine state transitions, pipeline creation (deferred), and MCP config.
-
-All early exits return {} (no sys.exit calls).
-"""
 from __future__ import annotations
 
 import json
@@ -13,8 +6,8 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
 import claude_gates.tracing as tracing
 from claude_gates.engine import PipelineEngine
@@ -37,7 +30,6 @@ HOME = os.environ.get("USERPROFILE") or os.environ.get("HOME") or ""
 
 
 def _extract_scope_from_transcript(transcript_path: Optional[str]) -> Optional[str]:
-    """Read first 2KB of a JSONL transcript to extract scope= value."""
     if not transcript_path:
         return None
     try:
@@ -52,10 +44,6 @@ def _extract_scope_from_transcript(transcript_path: Optional[str]) -> Optional[s
 def _extract_artifact_path(
     message: str, session_dir: str, agent_type: str
 ) -> Optional[Dict[str, str]]:
-    """Extract artifact path + scope from agent's last message.
-
-    Looks for: {session_dir}/{scope}/{bare_agent_type}.md
-    """
     normalized_dir = session_dir.replace("\\", "/")
     escaped_dir = re.escape(normalized_dir)
     bare_type = agent_type.split(":")[-1] if ":" in agent_type else agent_type
@@ -76,11 +64,9 @@ def _extract_artifact_path(
 def _resolve_scope(
     data: dict, repo: PipelineRepository, session_dir: str, bare_agent_type: str
 ) -> Dict[str, Any]:
-    """Three-tier fallback scope resolution. Returns dict with 'scope' key (may be None)."""
     agent_id = data.get("agent_id") or "unknown"
     last_message = data.get("last_assistant_message") or ""
 
-    # Tier 1: transcript path
     scope = _extract_scope_from_transcript(data.get("agent_transcript_path"))
     if not scope:
         alt_transcript = None
@@ -91,14 +77,12 @@ def _resolve_scope(
 
     artifact_path = None
 
-    # Tier 2: extract from last message
     if not scope and last_message:
         info = _extract_artifact_path(last_message, session_dir, bare_agent_type)
         if info:
             scope = info["scope"]
             artifact_path = info["artifactPath"]
 
-    # Tier 3: DB lookup
     if not scope:
         found = repo.find_agent_scope(bare_agent_type)
         if found:
@@ -123,7 +107,6 @@ def _resolve_scope(
 
 
 def _ensure_mcp_config(session_dir: str) -> str:
-    """Always write MCP config pointing to python3 + McpServer.py. Idempotent."""
     os.makedirs(session_dir, exist_ok=True)
     mcp_config_path = os.path.join(session_dir, "mcp-config.json")
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT") or PROJECT_ROOT
@@ -153,7 +136,6 @@ def _run_semantic_check(
     session_id: Optional[str] = None,
     scope: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Run claude -p semantic validation. Returns verdict dict or None on skip."""
     combined_prompt = prompt + "\n\n"
     if is_review:
         combined_prompt += (
@@ -205,7 +187,6 @@ def _run_semantic_check(
         )
         output = result.stdout.strip()
 
-        # Try Result: line
         m = re.search(r"^Result:\s*(PASS|FAIL|REVISE|CONVERGED)\b(.*)$", output, re.MULTILINE | re.IGNORECASE)
         if m:
             raw = m.group(1).upper()
@@ -217,7 +198,6 @@ def _run_semantic_check(
                 "fullResponse": output,
             }
 
-        # No Result: line — check DB for MCP verdict
         if session_id and scope:
             try:
                 session_d = get_session_dir(session_id)
@@ -277,7 +257,6 @@ def _write_audit(
     artifact_path: str,
     semantic_result: Optional[Dict[str, Any]],
 ) -> None:
-    """Write audit trail .md file. Non-fatal."""
     try:
         audit_dir = os.path.join(session_dir, scope) if scope else session_dir
         os.makedirs(audit_dir, exist_ok=True)
@@ -301,7 +280,6 @@ def _write_audit(
 
 
 def _utcnow() -> str:
-    from datetime import datetime, timezone
     return datetime.now(tz=timezone.utc).isoformat()
 
 
@@ -309,7 +287,6 @@ def _utcnow() -> str:
 
 
 def _gather_scope_context(session_dir: str, scope: Optional[str], agent_type: str) -> str:
-    """Collect other .md files in scope dir, excluding self and audit files."""
     if not scope:
         return ""
     bare = agent_type.split(":")[-1] if ":" in agent_type else agent_type
@@ -337,7 +314,6 @@ def _gather_scope_context(session_dir: str, scope: Optional[str], agent_type: st
 
 
 def _implicit_source_check(content: str, artifact_path: str) -> Optional[str]:
-    """Lightweight heuristic validation. Returns failure reason or None."""
     if not content or not content.strip():
         return f"Artifact is empty: {os.path.basename(artifact_path)}"
     stripped = content.strip()
@@ -354,7 +330,6 @@ def _implicit_source_check(content: str, artifact_path: str) -> Optional[str]:
 def _record_verdict(
     repo: PipelineRepository, scope: str, agent_type: str, verdict: str
 ) -> Optional[Dict[str, Any]]:
-    """Write verdict to agents table (upsert — no prior register_agent required)."""
     if not scope:
         return None
     try:
@@ -405,7 +380,6 @@ def _handle_source(
     span: Any,
     enabled: bool,
 ) -> None:
-    """Handle source agent stop."""
     state = repo.get_pipeline_state(scope)
     if state and state.get("status") == PipelineStatus.Revision:
         next_action = engine.step(scope, {"role": "source", "artifactVerdict": artifact_verdict})
@@ -421,9 +395,7 @@ def _handle_source(
                 },
             ).end()
             return
-        # Fall through: CHECK step reactivated, run semantic check
 
-    # Implicit source check
     implicit_fail = _implicit_source_check(artifact_content, artifact_path)
     if implicit_fail:
         notify(session_dir, "", f"{agent_type}: {implicit_fail}")
@@ -439,7 +411,6 @@ def _handle_source(
         tracing.score(span, enabled, "verdict", "FAIL", implicit_fail)
         return
 
-    # Check for active CHECK step
     active_step = repo.get_active_step(scope)
     quality_check = None
     semantic_result = None
@@ -500,7 +471,6 @@ def _handle_verifier(
     span: Any,
     enabled: bool,
 ) -> None:
-    """Handle verifier agent stop."""
     semantic_result = _run_semantic_check(
         "Is this review thorough? Does it identify real issues or correctly approve? "
         "Is the verdict justified given the scope artifacts?",
@@ -573,7 +543,6 @@ def _handle_fixer(
     span: Any,
     enabled: bool,
 ) -> None:
-    """Handle fixer agent stop."""
     semantic_result = _run_semantic_check(
         "Did this fix address the revision instructions?",
         artifact_content, artifact_path, scope_context,
@@ -621,7 +590,6 @@ def _handle_transformer(
     span: Any,
     enabled: bool,
 ) -> None:
-    """Handle transformer agent stop — auto-pass, no semantic check."""
     _record_verdict(repo, scope, agent_type, "PASS")
     next_action = engine.step(scope, {"role": "transformer", "artifactVerdict": "PASS"})
     tracing.trace(session_dir, "engine.step", scope, {
@@ -658,7 +626,6 @@ def _dispatch(
     span: Any,
     enabled: bool,
 ) -> None:
-    """Route to handler based on AgentRole."""
     if role == AgentRole.Transformer:
         _handle_transformer(repo, engine, scope, agent_type, artifact_path, session_dir, span, enabled)
     elif role == AgentRole.Source:
@@ -676,11 +643,6 @@ def _dispatch(
 
 
 def on_subagent_stop(data: dict) -> dict:
-    """SubagentStop hook main entry point.
-
-    Returns {} on all exit paths (fail-open).
-    Returns messaging.block(...) only for intentional hard blocks.
-    """
     if is_gate_disabled():
         return {}
 
@@ -695,7 +657,6 @@ def on_subagent_stop(data: dict) -> dict:
     session_dir = get_session_dir(session_id)
     last_message = data.get("last_assistant_message") or ""
 
-    # Find agent definition
     agent_md_path = find_agent_md(bare_agent_type, PROJECT_ROOT, HOME)
     md_content = None
     if agent_md_path:
@@ -712,12 +673,10 @@ def on_subagent_stop(data: dict) -> dict:
         repo = PipelineRepository(db)
         pipeline_engine = PipelineEngine(repo)
 
-        # Scope resolution
         resolved = _resolve_scope(data, repo, session_dir, bare_agent_type)
         scope = resolved["scope"]
         artifact_path = resolved.get("artifactPath")
 
-        # Cleanup running marker
         agent_spawn_time = 0
         if scope:
             marker_path = agent_running_marker(session_dir, scope)
@@ -730,25 +689,21 @@ def on_subagent_stop(data: dict) -> dict:
             except Exception:
                 pass
 
-        # Artifact resolution
         if scope:
             correct_path = os.path.join(session_dir, scope, f"{bare_agent_type}.md")
             temp_path = os.path.join(session_dir, f"{agent_id}.md")
             scope_dir = os.path.dirname(correct_path)
 
             if os.path.exists(temp_path):
-                # Agent wrote to temp path — move to canonical
                 os.makedirs(scope_dir, exist_ok=True)
                 try:
-                    import shutil as _shutil
-                    _shutil.copy2(temp_path, correct_path)
+                    shutil.copy2(temp_path, correct_path)
                     os.unlink(temp_path)
                 except Exception:
                     pass
             elif last_message:
                 os.makedirs(scope_dir, exist_ok=True)
                 if not os.path.exists(correct_path) and not is_continuation:
-                    # First stop, no artifact — pivot agent to write it
                     write_path = correct_path.replace("\\", "/")
                     pivot_msg = f"Your work is done. Write your complete findings to: {write_path}"
                     pivot_msg += (
@@ -766,16 +721,14 @@ def on_subagent_stop(data: dict) -> dict:
                             pivot_msg += f"\nA reviewer ({active_step.get('agent')}) will evaluate this artifact next."
                     except Exception:
                         pass
-                    return {"decision": "block", "reason": f"[ClaudeGates] {pivot_msg}"}
+                    return block("\U0001f6d1", pivot_msg)
                 elif not os.path.exists(correct_path) and is_continuation:
-                    # Continuation but still no file — fallback to last message
                     try:
                         with open(correct_path, "w", encoding="utf-8") as f:
                             f.write(last_message)
                     except Exception:
                         pass
                 elif os.path.exists(correct_path) and agent_spawn_time > 0:
-                    # Check if agent updated file during this run
                     try:
                         file_mtime_ms = os.stat(correct_path).st_mtime_ns // 1_000_000
                         if file_mtime_ms < agent_spawn_time:
@@ -787,14 +740,12 @@ def on_subagent_stop(data: dict) -> dict:
             if os.path.exists(correct_path):
                 artifact_path = correct_path
 
-        # Fallback: extract scope from last message
         if not scope and last_message:
             info = _extract_artifact_path(last_message, session_dir, agent_type)
             if info:
                 scope = info["scope"]
                 artifact_path = info["artifactPath"]
 
-        # Fallback: DB lookup
         if not scope:
             found = repo.find_agent_scope(bare_agent_type)
             if found:
@@ -803,7 +754,14 @@ def on_subagent_stop(data: dict) -> dict:
                 if os.path.exists(candidate):
                     artifact_path = candidate
 
-        # Deferred pipeline creation
+        # Clean up running marker if scope was resolved via fallback
+        if scope and agent_spawn_time == 0:
+            marker_path = agent_running_marker(session_dir, scope)
+            try:
+                os.unlink(marker_path)
+            except Exception:
+                pass
+
         if scope and md_content:
             steps = parse_verification(md_content)
             if steps and not repo.pipeline_exists(scope):
@@ -818,7 +776,6 @@ def on_subagent_stop(data: dict) -> dict:
                     + " → ".join(s.get("type", "") for s in steps) + ".",
                 )
 
-        # Role resolution
         role = pipeline_engine.resolve_role(scope, bare_agent_type) if scope else AgentRole.Ungated
 
         if role == AgentRole.Ungated:
@@ -832,7 +789,6 @@ def on_subagent_stop(data: dict) -> dict:
                     )
             return {}
 
-        # No artifact → treat as FAIL to avoid pipeline deadlock
         if not artifact_path or not os.path.exists(artifact_path):
             if scope:
                 expected = f"{session_dir.replace(chr(92), '/')}/{scope}/{bare_agent_type}.md"
@@ -851,7 +807,6 @@ def on_subagent_stop(data: dict) -> dict:
         except Exception:
             pass
 
-        # Extract artifact verdict (what the agent decided)
         verdict_match = re.search(
             r"^(?:\*{0,2})(?:Result|Verdict):?\s*(PASS|FAIL|REVISE|CONVERGED)",
             artifact_content, re.MULTILINE | re.IGNORECASE
@@ -860,7 +815,6 @@ def on_subagent_stop(data: dict) -> dict:
 
         scope_context = _gather_scope_context(session_dir, scope, agent_type)
 
-        # Langfuse tracing
         lf_ctx = tracing.init()
         langfuse = lf_ctx["langfuse"]
         enabled = lf_ctx["enabled"]
