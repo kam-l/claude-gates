@@ -266,7 +266,8 @@ class TestHookRunnerSysPath(unittest.TestCase):
     def test_plugin_root_src_inserted_when_env_set(self):
         """AC5: CLAUDE_PLUGIN_ROOT set → {CLAUDE_PLUGIN_ROOT}/src in sys.path."""
         path = self._run_minimal({"CLAUDE_PLUGIN_ROOT": "/fake/root"})
-        self.assertIn("/fake/root/src", path)
+        expected = os.path.join("/fake/root", "src")
+        self.assertIn(expected, path)
 
     def test_plugin_data_pylib_inserted_when_env_set(self):
         """AC5: CLAUDE_PLUGIN_DATA set → {CLAUDE_PLUGIN_DATA}/pylib in sys.path."""
@@ -274,7 +275,8 @@ class TestHookRunnerSysPath(unittest.TestCase):
             "CLAUDE_PLUGIN_ROOT": "/fake/root",
             "CLAUDE_PLUGIN_DATA": "/fake/data",
         })
-        self.assertIn("/fake/data/pylib", path)
+        expected = os.path.join("/fake/data", "pylib")
+        self.assertIn(expected, path)
 
     def test_plugin_data_not_set_no_error(self):
         """Edge case: CLAUDE_PLUGIN_DATA not set → skip pylib, no error."""
