@@ -1,7 +1,3 @@
-"""Tests for PipelineEngine (Task 6).
-
-Covers acceptance criteria from spec.md and test cases from task.md.
-"""
 from __future__ import annotations
 
 import os
@@ -62,7 +58,6 @@ def _transform_step(agent="gt-cleaner", max_rounds=1):
 # ── AC1: Unknown verdicts default to PASS ──────────────────────────────────────
 
 class TestNormalizeVerdictUnknown(unittest.TestCase):
-    """AC1: Unknown verdict -> PASS (fail-open) with stderr warning."""
 
     def setUp(self):
         self.engine, self.repo, self.conn = _make_engine()
@@ -72,7 +67,6 @@ class TestNormalizeVerdictUnknown(unittest.TestCase):
 
     def test_unknown_verdict_returns_pass(self):
         from src.claude_gates.engine import PipelineEngine
-        # Access the private method directly
         result = self.engine._normalize_verdict("SOMETHING_WEIRD")
         self.assertEqual(result, Verdict.Pass)
 
@@ -96,7 +90,6 @@ class TestNormalizeVerdictUnknown(unittest.TestCase):
 # ── AC2: CONVERGED -> PASS, FAIL -> REVISE ────────────────────────────────────
 
 class TestNormalizeVerdictAliases(unittest.TestCase):
-    """AC2: CONVERGED maps to PASS, FAIL maps to REVISE."""
 
     def setUp(self):
         self.engine, self.repo, self.conn = _make_engine()
@@ -132,7 +125,6 @@ class TestNormalizeVerdictAliases(unittest.TestCase):
 # ── AC3: resolve_role always returns AgentRole ────────────────────────────────
 
 class TestResolveRole(unittest.TestCase):
-    """AC3: resolve_role always returns AgentRole; never None."""
 
     def setUp(self):
         self.engine, self.repo, self.conn = _make_engine()
@@ -203,7 +195,6 @@ class TestResolveRole(unittest.TestCase):
 # ── AC4: Engine only sets DB state, never filesystem ─────────────────────────
 
 class TestReviseExhaustion(unittest.TestCase):
-    """AC4: _revise() when rounds exhausted -> DB status=Failed only, no filesystem."""
 
     def setUp(self):
         self.engine, self.repo, self.conn = _make_engine()
@@ -230,10 +221,8 @@ class TestReviseExhaustion(unittest.TestCase):
 # ── AC5: Concurrent step() calls (transact wrapping) ─────────────────────────
 
 class TestConcurrentStepSafety(unittest.TestCase):
-    """AC5: step() wraps in transact() — BEGIN IMMEDIATE for concurrency safety."""
 
     def test_step_uses_transaction(self):
-        """Verify step() calls transact internally (structural test via no corruption)."""
         import threading
         engine, repo, conn = _make_engine()
         engine.create_pipeline("c1", "writer", [_verify_step("gt-reviewer")])
@@ -261,7 +250,6 @@ class TestConcurrentStepSafety(unittest.TestCase):
 # ── Edge Cases from spec ──────────────────────────────────────────────────────
 
 class TestStepEdgeCases(unittest.TestCase):
-    """Edge cases: non-existent scope, completed pipeline, step on None."""
 
     def setUp(self):
         self.engine, self.repo, self.conn = _make_engine()
@@ -289,7 +277,6 @@ class TestStepEdgeCases(unittest.TestCase):
 # ── create_pipeline ───────────────────────────────────────────────────────────
 
 class TestCreatePipeline(unittest.TestCase):
-    """create_pipeline inserts pipeline + steps; first step auto-activated."""
 
     def setUp(self):
         self.engine, self.repo, self.conn = _make_engine()
@@ -322,7 +309,6 @@ class TestCreatePipeline(unittest.TestCase):
 # ── step() transitions ────────────────────────────────────────────────────────
 
 class TestStepTransitions(unittest.TestCase):
-    """Main step() state machine transitions."""
 
     def setUp(self):
         self.engine, self.repo, self.conn = _make_engine()

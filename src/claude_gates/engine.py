@@ -1,21 +1,4 @@
-"""Pipeline state machine engine.
-
-Port of PipelineEngine.ts.  Owns ALL pipeline state transitions.
-PipelineRepository is pure CRUD.
-
-Primary entry point:
-    step(scope, input) — agent completed, process verdict, return next Action
-
-Input can be:
-    str            — backward compat, treated as artifactVerdict
-    IStepInput     — {"role": ..., "artifactVerdict": ...}
-
-Role-aware dispatch:
-    source     — if pipeline in Revision -> reactivate revise step; else normal step
-    verifier   — normal step on artifact verdict
-    fixer      — always reactivate the step that ordered revision
-    ungated    — None (no pipeline interaction)
-"""
+"""Pipeline state machine engine. Port of PipelineEngine.ts."""
 from __future__ import annotations
 
 import sys
@@ -40,8 +23,6 @@ class PipelineEngine:
     def __init__(self, repo: PipelineRepository) -> None:
         self._repo = repo
 
-    # ── Pipeline creation ──────────────────────────────────────────────
-
     def create_pipeline(
         self,
         scope: str,
@@ -56,8 +37,6 @@ class PipelineEngine:
                 self._repo.insert_step(scope, i, step, source_agent)
 
         PipelineRepository.transact(self._repo._conn, _create)
-
-    # ── Step processing ────────────────────────────────────────────────
 
     def step(self, scope: str, input: Union[str, Dict[str, Any]]) -> Action:
         def _step() -> Action:
@@ -99,12 +78,9 @@ class PipelineEngine:
             if v == Verdict.Revise:
                 return self._revise(scope, state, active_step)
 
-            # Unknown verdict (normalize_verdict already warned and returned Pass)
             return self._advance(scope, active_step)
 
         return PipelineRepository.transact(self._repo._conn, _step)
-
-    # ── Action query ───────────────────────────────────────────────────
 
     def get_next_action(self, scope: str) -> Action:
         return self._build_action(scope)
@@ -118,12 +94,9 @@ class PipelineEngine:
                 actions.append(action)
         return actions
 
-    # ── Role resolution ────────────────────────────────────────────────
-
     def resolve_role(self, scope: str, agent_type: str) -> AgentRole:
         if not scope:
             pipelines = self._repo.get_active_pipelines()
-            # Prefer pipelines in Revision state
             sorted_pipelines = sorted(
                 pipelines,
                 key=lambda p: 0 if p["status"] == PipelineStatus.Revision else 1,
@@ -138,8 +111,6 @@ class PipelineEngine:
         if not state:
             return AgentRole.Ungated
         return self._resolve_role_in_scope(scope, agent_type, state["source_agent"])
-
-    # ── Retry gate agent ───────────────────────────────────────────────
 
     def retry_gate_agent(self, scope: str) -> Action:
         def _retry() -> Action:
@@ -165,8 +136,6 @@ class PipelineEngine:
 
         return PipelineRepository.transact(self._repo._conn, _retry)
 
-    # ── Private: input normalisation ───────────────────────────────────
-
     def _normalize_input(
         self, input: Union[str, Dict[str, Any]]
     ) -> tuple:
@@ -182,26 +151,21 @@ class PipelineEngine:
             return Verdict.Pass
         if v in (Verdict.Revise, Verdict.Fail):
             return Verdict.Revise
-        # Unknown — fail-open, warn
         sys.stderr.write(
             f"[ClaudeGates] WARNING: Unknown verdict \"{verdict}\". Treating as PASS.\n"
         )
         return Verdict.Pass
 
-    # ── Private: state transitions ─────────────────────────────────────
-
     def _advance(self, scope: str, active_step: Dict[str, Any]) -> Action:
-        def _do_advance() -> None:
-            self._repo.update_step_status(scope, active_step["step_index"], StepStatus.Passed)
-            next_index = active_step["step_index"] + 1
-            next_step = self._repo.get_step(scope, next_index)
-            if next_step and next_step["status"] == StepStatus.Pending:
-                self._repo.update_step_status(scope, next_index, StepStatus.Active)
-                self._repo.update_pipeline_state(scope, {"current_step": next_index})
-            elif not self._repo.has_non_passed_steps(scope):
-                self._repo.update_pipeline_state(scope, {"status": PipelineStatus.Completed})
-
-        PipelineRepository.transact(self._repo._conn, _do_advance)
+        # No transact() here — caller (step()) already holds the transaction
+        self._repo.update_step_status(scope, active_step["step_index"], StepStatus.Passed)
+        next_index = active_step["step_index"] + 1
+        next_step = self._repo.get_step(scope, next_index)
+        if next_step and next_step["status"] == StepStatus.Pending:
+            self._repo.update_step_status(scope, next_index, StepStatus.Active)
+            self._repo.update_pipeline_state(scope, {"current_step": next_index})
+        elif not self._repo.has_non_passed_steps(scope):
+            self._repo.update_pipeline_state(scope, {"status": PipelineStatus.Completed})
 
         state = self._repo.get_pipeline_state(scope)
         if state and state["status"] == PipelineStatus.Completed:
@@ -217,11 +181,8 @@ class PipelineEngine:
         new_round = active_step["round"] + 1
 
         if new_round > active_step["max_rounds"]:
-            def _fail() -> None:
-                self._repo.update_step_status(scope, active_step["step_index"], StepStatus.Failed, new_round)
-                self._repo.update_pipeline_state(scope, {"status": PipelineStatus.Failed})
-
-            PipelineRepository.transact(self._repo._conn, _fail)
+            self._repo.update_step_status(scope, active_step["step_index"], StepStatus.Failed, new_round)
+            self._repo.update_pipeline_state(scope, {"status": PipelineStatus.Failed})
             return {
                 "action": "failed",
                 "scope": scope,
@@ -235,15 +196,11 @@ class PipelineEngine:
             and active_step.get("fixer")
         )
         new_status = StepStatus.Fix if has_fixer else StepStatus.Revise
-
-        def _do_revise() -> None:
-            self._repo.update_step_status(scope, active_step["step_index"], new_status, new_round)
-            self._repo.update_pipeline_state(
-                scope,
-                {"status": PipelineStatus.Revision, "revision_step": active_step["step_index"]},
-            )
-
-        PipelineRepository.transact(self._repo._conn, _do_revise)
+        self._repo.update_step_status(scope, active_step["step_index"], new_status, new_round)
+        self._repo.update_pipeline_state(
+            scope,
+            {"status": PipelineStatus.Revision, "revision_step": active_step["step_index"]},
+        )
 
         agent = active_step["fixer"] if has_fixer else state["source_agent"]
         fresh_step = self._repo.get_step(scope, active_step["step_index"]) or active_step
@@ -256,18 +213,15 @@ class PipelineEngine:
         if not target:
             return None
 
-        def _do_reactivate() -> None:
-            self._repo.update_step_status(scope, target["step_index"], StepStatus.Active)
-            self._repo.update_pipeline_state(
-                scope,
-                {
-                    "status": PipelineStatus.Normal,
-                    "current_step": target["step_index"],
-                    "revision_step": None,
-                },
-            )
-
-        PipelineRepository.transact(self._repo._conn, _do_reactivate)
+        self._repo.update_step_status(scope, target["step_index"], StepStatus.Active)
+        self._repo.update_pipeline_state(
+            scope,
+            {
+                "status": PipelineStatus.Normal,
+                "current_step": target["step_index"],
+                "revision_step": None,
+            },
+        )
         return self._build_action(scope)
 
     def _build_action(self, scope: str) -> Action:
