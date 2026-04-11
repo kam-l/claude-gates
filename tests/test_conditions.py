@@ -405,7 +405,7 @@ class TestStepEnforcement(unittest.TestCase):
         repo = PipelineRepository(conn)
         repo.insert_pipeline(scope, "source-agent", 1)
         repo.insert_step(scope, 0, {
-            "type": "verify",
+            "type": "VERIFY",
             "agent": expected_agent,
             "maxRounds": 3,
         }, "source-agent")

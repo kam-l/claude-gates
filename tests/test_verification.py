@@ -132,7 +132,7 @@ class TestResolveScope(unittest.TestCase):
             # Write transcript with scope=
             transcript = os.path.join(session_dir, "agent.jsonl")
             with open(transcript, "w") as f:
-                f.write('{"scope":"task-abc"}\n')
+                f.write('{"prompt":"scope=task-abc implement the feature"}\n')
             data = {
                 "agent_type": "gt-planner",
                 "agent_id": "unknown",
@@ -200,10 +200,10 @@ class TestDeferredPipelineCreation(unittest.TestCase):
             with open(artifact, "w") as f:
                 f.write("# Plan\n- step one\n- step two\n")
 
-            # Write transcript with scope=
+            # Write transcript with scope= (literal format, not JSON key)
             transcript = os.path.join(sessions_dir, "agent.jsonl")
             with open(transcript, "w") as f:
-                f.write('{"scope":"task-x"}\n')
+                f.write('{"prompt":"scope=task-x implement the feature"}\n')
 
             data = {
                 "agent_type": "gt-planner",
@@ -215,24 +215,38 @@ class TestDeferredPipelineCreation(unittest.TestCase):
                 "stop_hook_active": False,
             }
 
-            # Patch get_session_dir + open_database to use tmpdir
-            conn = _make_db()
+            # Use file-based DB so we can re-open after hook closes it
+            import sqlite3
+            db_path = os.path.join(sessions_dir, "session.db")
+            conn = sqlite3.connect(db_path, isolation_level=None)
+            conn.row_factory = sqlite3.Row
             PipelineRepository.init_schema(conn)
-            repo = PipelineRepository(conn)
 
             # Pipeline must NOT exist before hook runs
+            repo = PipelineRepository(conn)
             self.assertFalse(repo.pipeline_exists("task-x"))
+            conn.close()
+
+            def _open_db(sd):
+                c = sqlite3.connect(db_path, isolation_level=None)
+                c.row_factory = sqlite3.Row
+                return c
 
             with patch("src.claude_gates.verification.get_session_dir", return_value=sessions_dir), \
-                 patch("src.claude_gates.verification.open_database", return_value=conn), \
+                 patch("src.claude_gates.verification.open_database", side_effect=_open_db), \
                  patch("src.claude_gates.verification.is_gate_disabled", return_value=False), \
                  patch("src.claude_gates.verification._run_semantic_check", return_value=None), \
                  patch("src.claude_gates.verification.find_agent_md", return_value=agent_md), \
                  patch("os.getcwd", return_value=tmpdir):
                 result = on_subagent_stop(data)
 
-            # Pipeline MUST exist now
-            self.assertTrue(repo.pipeline_exists("task-x"))
+            # Re-open to check — the hook closed its connection
+            conn2 = sqlite3.connect(db_path, isolation_level=None)
+            conn2.row_factory = sqlite3.Row
+            PipelineRepository.init_schema(conn2)
+            repo2 = PipelineRepository(conn2)
+            self.assertTrue(repo2.pipeline_exists("task-x"))
+            conn2.close()
 
 
 # ── AC2: Semantic check overrides PASS to REVISE ──────────────────────
@@ -387,7 +401,7 @@ class TestNoSysExit(unittest.TestCase):
         )
         if not os.path.exists(module_path):
             self.skipTest("verification.py not yet implemented")
-        with open(module_path, "r") as f:
+        with open(module_path, "r", encoding="utf-8") as f:
             content = f.read()
         self.assertNotIn("sys.exit(", content, "verification.py must not call sys.exit()")
 
@@ -506,7 +520,7 @@ class TestImplicitSourceCheck(unittest.TestCase):
 
     def test_valid_artifact_passes(self):
         from src.claude_gates.verification import _implicit_source_check
-        result = _implicit_source_check("# Title\n- bullet\n- another\n", "some.md")
+        result = _implicit_source_check("# Title\n\n- bullet point one explaining the approach\n- another bullet with sufficient detail\n", "some.md")
         self.assertIsNone(result)
 
 
