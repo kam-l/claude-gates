@@ -12,7 +12,7 @@ import re
 import sys
 
 from claude_gates.session import is_gate_disabled, get_session_dir, open_database
-from claude_gates.messaging import block, log
+from claude_gates.messaging import block, info, log
 from claude_gates.repository import PipelineRepository
 
 TRIVIAL_LINE_LIMIT = 20
@@ -124,7 +124,11 @@ def on_exit_plan_mode(data: dict) -> dict:
 
         if safety_valve:
             sys.stderr.write("[ClaudeGates] Safety valve activated.\n")
-            return {}
+            return info(
+                "\u26a0\ufe0f",
+                f'"{most_recent_name}" bypassed plan-gate safety valve after '
+                f"{MAX_ATTEMPTS} attempts. Verification skipped.",
+            )
 
         # 9. Block
         reason = (

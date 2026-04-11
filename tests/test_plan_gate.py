@@ -186,6 +186,13 @@ class TestOnExitPlanModeNoPlansInDir(unittest.TestCase):
         result = _run_exit_plan_mode({"session_id": "abc12345"}, self.tmp, self.session_dir)
         self.assertEqual(result, {})
 
+    def test_mixed_dir_non_agent_files_still_trigger_gate(self):
+        """AC5: directory with both agent and non-agent .md files — non-agent ones trigger gate."""
+        _write_plan(self.plans_dir, "plan-agent-review.md", 30)  # filtered out
+        _write_plan(self.plans_dir, "myplan.md", 25)             # should trigger gate
+        result = _run_exit_plan_mode({"session_id": "abc12345"}, self.tmp, self.session_dir)
+        self.assertEqual(result.get("decision"), "block")
+
 
 class TestOnExitPlanModeSafetyValve(unittest.TestCase):
     """Safety valve: >= MAX_ATTEMPTS → reset attempts, return {}, write stderr warning."""
@@ -211,12 +218,21 @@ class TestOnExitPlanModeSafetyValve(unittest.TestCase):
         result = self._run()  # attempt 2
         self.assertEqual(result.get("decision"), "block")
 
-    def test_third_attempt_is_safety_valve(self):
-        """Third attempt hits safety valve (MAX_ATTEMPTS=3) → allow."""
+    def test_third_attempt_is_safety_valve_returns_system_message(self):
+        """Third attempt hits safety valve (MAX_ATTEMPTS=3) → systemMessage (not a block)."""
         self._run()  # attempt 1
         self._run()  # attempt 2
         result = self._run()  # attempt 3 — safety valve
-        self.assertEqual(result, {})
+        # AC1: safety valve returns a systemMessage dict (allows exit, informs LLM)
+        self.assertIn("systemMessage", result)
+        self.assertNotIn("decision", result)
+
+    def test_third_attempt_safety_valve_not_a_block(self):
+        """Safety valve must not return a block decision."""
+        self._run()  # 1
+        self._run()  # 2
+        result = self._run()  # 3 — safety valve
+        self.assertNotEqual(result.get("decision"), "block")
 
     def test_safety_valve_resets_attempts(self):
         """After safety valve fires, attempts are reset so next cycle starts fresh."""
