@@ -1,13 +1,3 @@
-"""
-tracing.py — port of Tracing.ts
-
-Provides Langfuse SDK integration with a NOOP proxy fallback, session-level
-trace management via deterministic IDs, scope spans, categorical scoring,
-sync shutdown, and local audit.jsonl append (best-effort).
-
-Langfuse is optional — system works fully without it.
-"""
-
 import hashlib
 import json
 import os
@@ -15,18 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 
-# ---------------------------------------------------------------------------
-# NOOP proxy — transparent proxy for Langfuse objects when tracing is disabled.
-# Any attribute access returns a callable that returns NOOP (infinite chaining).
-# __bool__ returns False so `if langfuse:` checks fail when tracing is disabled.
-# ---------------------------------------------------------------------------
-
 class _Noop:
-    """
-    Transparent proxy that absorbs any attribute access or call and returns
-    itself, supporting infinite chaining: NOOP.trace({}).span({}).end().
-    """
-
     def __getattr__(self, name: str) -> "_Noop":
         return self
 
@@ -39,37 +18,33 @@ class _Noop:
     def __repr__(self) -> str:
         return "<NOOP>"
 
+    def __enter__(self) -> "_Noop":
+        return self
+
+    def __exit__(self, *a: Any) -> None:
+        pass
+
+    def __iter__(self):
+        return iter(())
+
+    def __len__(self) -> int:
+        return 0
+
 
 NOOP: _Noop = _Noop()
 
-
-# ---------------------------------------------------------------------------
-# TracingContext
-# ---------------------------------------------------------------------------
-
-class TracingContext(dict):
-    """
-    Dict-based context so callers can use ctx['langfuse'] / ctx['enabled']
-    as well as attribute-style access if needed.
-    """
 
 
 def _make_context(langfuse: Any, enabled: bool) -> Dict[str, Any]:
     return {"langfuse": langfuse, "enabled": enabled}
 
 
-# ---------------------------------------------------------------------------
-# init() — lazy import of langfuse; falls back gracefully
-# ---------------------------------------------------------------------------
-
 def init() -> Dict[str, Any]:
     """
-    Initialise Langfuse tracing.  Returns ``{langfuse, enabled}``.
+    Initialise Langfuse tracing. Returns ``{langfuse, enabled}``.
 
-    Falls back to NOOP when:
-    - LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY env vars are missing
-    - langfuse package is not installed (ImportError)
-    - any other exception during client construction
+    Falls back to NOOP when env keys are missing, langfuse is not installed,
+    or any exception occurs during client construction.
     """
     if not os.environ.get("LANGFUSE_PUBLIC_KEY") or not os.environ.get("LANGFUSE_SECRET_KEY"):
         return _make_context(NOOP, False)
@@ -88,31 +63,14 @@ def init() -> Dict[str, Any]:
         return _make_context(NOOP, False)
 
 
-# ---------------------------------------------------------------------------
-# session_trace_id — deterministic, no DB lookup
-# ---------------------------------------------------------------------------
-
 def session_trace_id(session_id: str) -> str:
-    """
-    Return a deterministic 32-char hex trace ID derived from session_id.
-    SHA-256 of the session_id string, first 32 hex characters.
-    """
+    """Return a deterministic 32-char hex trace ID derived from session_id."""
     return hashlib.sha256(session_id.encode()).hexdigest()[:32]
 
 
-# ---------------------------------------------------------------------------
-# _get_pipeline_state — thin wrapper so tests can patch it
-# ---------------------------------------------------------------------------
-
 def _get_pipeline_state(db: Any, scope: str) -> Any:
-    """
-    Retrieve pipeline state row for ``scope`` from the DB.
-    Thin wrapper so callers/tests can patch this without touching DB classes.
-    Returns None when DB is unavailable or row does not exist.
-    """
+    """Return the pipeline_state row for ``scope``, or None on any error."""
     try:
-        # PipelineRepository may not be available in the Python port yet;
-        # attempt direct SQL as a best-effort fallback.
         cursor = db.execute(
             "SELECT scope FROM pipeline_state WHERE scope = ?", (scope,)
         )
@@ -122,7 +80,6 @@ def _get_pipeline_state(db: Any, scope: str) -> Any:
 
 
 def _set_trace_id(db: Any, scope: str, trace_id: str) -> None:
-    """Set trace_id on pipeline_state. Best-effort."""
     try:
         db.execute(
             "UPDATE pipeline_state SET trace_id = ? WHERE scope = ?",
@@ -132,10 +89,6 @@ def _set_trace_id(db: Any, scope: str, trace_id: str) -> None:
         pass
 
 
-# ---------------------------------------------------------------------------
-# get_or_create_trace — session-level trace with deterministic ID
-# ---------------------------------------------------------------------------
-
 def get_or_create_trace(
     langfuse: Any,
     enabled: bool,
@@ -144,11 +97,10 @@ def get_or_create_trace(
     session_id: str,
 ) -> Any:
     """
-    Return a Langfuse trace object for the current session.
+    Return a Langfuse trace for the session, or NOOP when disabled or on error.
 
-    All scopes in one session share the same deterministic trace ID.
-    Writes trace_id to pipeline_state for PipelineBlock compatibility.
-    Returns NOOP when tracing is disabled or on any error.
+    All scopes share the same deterministic trace ID. Writes trace_id to
+    pipeline_state for PipelineBlock compatibility.
     """
     if not enabled:
         return NOOP
@@ -171,18 +123,10 @@ def get_or_create_trace(
         return NOOP
 
 
-# ---------------------------------------------------------------------------
-# scope_span — named span under the session trace
-# ---------------------------------------------------------------------------
-
 def scope_span(trace: Any, scope: str) -> Any:
     """Return a span named ``scope:<scope>`` under ``trace``."""
     return trace.span(name=f"scope:{scope}")
 
-
-# ---------------------------------------------------------------------------
-# score — categorical score for a verdict event
-# ---------------------------------------------------------------------------
 
 def score(
     trace: Any,
@@ -205,17 +149,8 @@ def score(
         pass
 
 
-# ---------------------------------------------------------------------------
-# flush — sync shutdown (blocks until all events delivered)
-# ---------------------------------------------------------------------------
-
 def flush(langfuse: Any, enabled: bool) -> None:
-    """
-    Sync shutdown of the Langfuse client.
-
-    Uses ``langfuse.shutdown()`` (blocking) to guarantee all events are
-    delivered at session end.  No-op when tracing is disabled.
-    """
+    """Sync shutdown of the Langfuse client. No-op when tracing is disabled."""
     if not enabled:
         return
     try:
@@ -224,22 +159,13 @@ def flush(langfuse: Any, enabled: bool) -> None:
         pass
 
 
-# ---------------------------------------------------------------------------
-# trace — append to audit.jsonl (best-effort local log)
-# ---------------------------------------------------------------------------
-
 def trace(
     session_dir: str,
     op: str,
     scope: Optional[str],
     detail: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """
-    Append a JSON line to ``{session_dir}/audit.jsonl``.
-
-    Entry contains: ts (ISO), op, scope, and any additional fields from
-    ``detail``.  Wrapped in try/except — I/O errors are silently swallowed.
-    """
+    """Append a JSON line to ``{session_dir}/audit.jsonl``. I/O errors are silently swallowed."""
     try:
         entry: Dict[str, Any] = {
             "ts": datetime.now(tz=timezone.utc).isoformat(),

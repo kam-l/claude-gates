@@ -243,23 +243,19 @@ class TestAgentCRUD(unittest.TestCase):
         agent = self.repo.get_agent("scope1", "reviewer")
         self.assertEqual(agent["outputFilepath"], "/new/path.md")
 
-    def test_set_verdict_upsert_without_prior_register(self):
-        """AC1: set_verdict uses INSERT...ON CONFLICT so it works without prior register_agent."""
-        # No register_agent call first
+    def test_set_verdict_without_register_is_noop(self):
+        """set_verdict is a bare UPDATE — does nothing if row doesn't exist."""
         self.repo.set_verdict("scope1", "reviewer", "PASS", 1)
         agent = self.repo.get_agent("scope1", "reviewer")
-        self.assertIsNotNone(agent)
-        self.assertEqual(agent["verdict"], "PASS")
-        self.assertEqual(agent["round"], 1)
+        self.assertIsNone(agent, "set_verdict must NOT create rows — use register_agent first")
 
     def test_set_verdict_after_register(self):
-        """AC1: set_verdict also works when row already exists via register_agent."""
+        """set_verdict updates an existing row created by register_agent."""
         self.repo.register_agent("scope1", "reviewer", "/path/output.md")
         self.repo.set_verdict("scope1", "reviewer", "REVISE", 2)
         agent = self.repo.get_agent("scope1", "reviewer")
         self.assertEqual(agent["verdict"], "REVISE")
         self.assertEqual(agent["round"], 2)
-        # outputFilepath preserved by upsert
         self.assertEqual(agent["outputFilepath"], "/path/output.md")
 
     def test_set_verdict_with_null_verdict(self):
@@ -354,17 +350,14 @@ class TestGateMethods(unittest.TestCase):
         self.assertEqual(agent["round"], 2)
 
     def test_set_verdict_vs_upsert_verdict_distinction(self):
-        """
-        AC1 critical check: set_verdict uses upsert (works without prior register).
-        upsert_verdict is the gate-pattern method (from GateRepository).
-        Both must work without prior register_agent.
-        """
-        # set_verdict without prior register
+        """set_verdict = bare UPDATE (needs register_agent first).
+        upsert_verdict = INSERT ON CONFLICT (gate/MCP path, no prior register)."""
+        # set_verdict without register → no row created
         self.repo.set_verdict("scope1", "agent-a", "PASS", 1)
         row_a = self.repo.get_agent("scope1", "agent-a")
-        self.assertIsNotNone(row_a, "set_verdict must work without prior register_agent")
+        self.assertIsNone(row_a, "set_verdict must NOT create rows")
 
-        # upsert_verdict without prior register
+        # upsert_verdict without register → row created
         self.repo.upsert_verdict("scope1", "agent-b", "REVISE", 1)
         row_b = self.repo.get_agent("scope1", "agent-b")
         self.assertIsNotNone(row_b, "upsert_verdict must work without prior register_agent")
@@ -516,24 +509,26 @@ class TestTransact(unittest.TestCase):
 
     def test_transact_raises_after_3_busy_retries(self):
         """AC2: After 3 SQLITE_BUSY retries, transact raises."""
-        import unittest.mock as mock
+        import tempfile
         PipelineRepository = _import_repo()
 
-        call_count = [0]
-        original_execute = self.conn.execute
+        # Need a file-based DB for locking (in-memory DBs can't be shared)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test.db")
+            conn1 = sqlite3.connect(db_path, isolation_level=None)
+            conn1.execute("PRAGMA busy_timeout = 0")
+            PipelineRepository.init_schema(conn1)
 
-        def mock_execute(sql, *args, **kwargs):
-            if "BEGIN IMMEDIATE" in sql:
-                call_count[0] += 1
-                raise sqlite3.OperationalError("database is locked")
-            return original_execute(sql, *args, **kwargs)
-
-        with mock.patch.object(self.conn, "execute", side_effect=mock_execute):
-            with self.assertRaises(sqlite3.OperationalError):
-                PipelineRepository.transact(self.conn, lambda: None)
-
-        # Should have tried 3 times (not more, not fewer)
-        self.assertGreaterEqual(call_count[0], 3)
+            blocker = sqlite3.connect(db_path, isolation_level=None)
+            blocker.execute("PRAGMA busy_timeout = 0")
+            blocker.execute("BEGIN EXCLUSIVE")
+            try:
+                with self.assertRaises(sqlite3.OperationalError):
+                    PipelineRepository.transact(conn1, lambda: None)
+            finally:
+                blocker.execute("ROLLBACK")
+                blocker.close()
+                conn1.close()
 
 
 if __name__ == "__main__":

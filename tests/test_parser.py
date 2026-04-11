@@ -137,18 +137,9 @@ class TestParseVerification:
         assert result is None
 
     def test_empty_verification_block_returns_empty_list(self):
-        # Edge case: verification: with no items -> returns empty list not None
-        # Spec says empty verification block -> empty list not None
-        # However the TS impl returns null for 0 steps - the spec says empty list
-        # We follow the spec acceptance criteria here
+        # Spec AC: empty verification: key -> [] not None
         md = "---\nverification:\n---\nbody"
         result = parse_verification(md)
-        # Per spec: "Empty verification block -> returns empty list, not None"
-        # But with no items there's no match for the block regex at all
-        # The TS returns null here too. Let's return None since there's no block.
-        # Actually the spec says: verification: with no items -> empty list
-        # We'll test both - empty list OR None are both reasonable
-        # The spec explicitly says empty list, so we'll assert that
         assert result is not None
         assert result == []
 
@@ -370,6 +361,25 @@ class TestParseStepArray:
         assert step["type"] == StepType.Transform
         assert step["maxRounds"] == 1
 
+    def test_non_numeric_rounds_returns_none_transform(self):
+        # Regression: int() on non-numeric input must return None, not raise ValueError
+        step = _parse_step_array("cleaner!, bad")
+        assert step is None
+
+    def test_non_numeric_rounds_returns_none_verify(self):
+        # Regression: int() on non-numeric input must return None, not raise ValueError
+        step = _parse_step_array("reviewer?, xyz")
+        assert step is None
+
+    def test_transform_with_three_parts_falls_through_to_verify_w_fixer(self):
+        # Regression: [fixer!, 1, extra] must NOT produce TRANSFORM (TS parts.length <= 2 guard)
+        step = _parse_step_array("fixer!, 1, extra")
+        # Falls through to VERIFY_W_FIXER path since 3 parts and extra is valid agent name
+        assert step is not None
+        assert step["type"] == StepType.VerifyWithFixer
+        assert step["agent"] == "fixer"
+        assert step["fixer"] == "extra"
+
 
 # ── _split_csv ─────────────────────────────────────────────────────────
 
@@ -395,6 +405,12 @@ class TestSplitCsv:
         # splitCSV strips content inside quotes
         result = _split_csv('"hello world", test')
         assert result == ["hello world", "test"]
+
+    def test_empty_segment_preserved(self):
+        # Regression: TS pushes empty strings on comma unconditionally;
+        # Python must match — "reviewer?, , fixer!" -> ["reviewer?", "", "fixer!"]
+        result = _split_csv("reviewer?, , fixer!")
+        assert result == ["reviewer?", "", "fixer!"]
 
 
 # ── _unquote ───────────────────────────────────────────────────────────

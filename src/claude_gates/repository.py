@@ -187,9 +187,17 @@ class PipelineRepository:
                 (status, scope, step_index),
             )
 
+    _ALLOWED_STATE_KEYS = frozenset({
+        "status", "current_step", "revision_step", "total_steps", "trace_id",
+        "source_agent",
+    })
+
     def update_pipeline_state(self, scope: str, updates: Dict[str, Any]) -> None:
         if not updates:
             return
+        bad_keys = set(updates) - self._ALLOWED_STATE_KEYS
+        if bad_keys:
+            raise ValueError(f"Invalid pipeline_state keys: {bad_keys}")
         sets = ", ".join(f"{key} = ?" for key in updates)
         vals = list(updates.values()) + [scope]
         self._conn.execute(
@@ -230,25 +238,22 @@ class PipelineRepository:
         round: int,
         check: Optional[str] = None,
     ) -> None:
-        """Upsert verdict for an agent row.
+        """UPDATE verdict for an existing agent row (must be pre-registered via register_agent).
 
-        AC1: Uses INSERT...ON CONFLICT so it works whether or not register_agent
-        was called first. Updates verdict, round, and optionally check.
-        Preserves existing outputFilepath and attempts values.
+        This is a bare UPDATE — row must already exist. For the gate/MCP path
+        where no prior register_agent is called, use upsert_verdict() instead.
         """
         if check is not None:
             self._conn.execute(
-                "INSERT INTO agents (scope, agent, verdict, \"check\", round) VALUES (?, ?, ?, ?, ?) "
-                "ON CONFLICT(scope, agent) DO UPDATE SET "
-                "verdict = excluded.verdict, \"check\" = excluded.\"check\", round = excluded.round",
-                (scope, agent, verdict, check, round),
+                "UPDATE agents SET verdict = ?, \"check\" = ?, round = ? "
+                "WHERE scope = ? AND agent = ?",
+                (verdict, check, round, scope, agent),
             )
         else:
             self._conn.execute(
-                "INSERT INTO agents (scope, agent, verdict, round) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(scope, agent) DO UPDATE SET "
-                "verdict = excluded.verdict, round = excluded.round",
-                (scope, agent, verdict, round),
+                "UPDATE agents SET verdict = ?, round = ? "
+                "WHERE scope = ? AND agent = ?",
+                (verdict, round, scope, agent),
             )
 
     def get_agent(self, scope: str, agent: str) -> Optional[Dict[str, Any]]:

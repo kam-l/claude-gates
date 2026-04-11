@@ -16,7 +16,6 @@ from src.claude_gates.tracing import NOOP
 
 
 class TestNoopProxy(unittest.TestCase):
-    """AC1: NOOP proxy supports infinite chaining and attribute access."""
 
     def test_attribute_access_returns_noop(self):
         result = NOOP.id
@@ -39,7 +38,6 @@ class TestNoopProxy(unittest.TestCase):
         self.assertIs(result, NOOP)
 
     def test_bool_is_false(self):
-        """AC edge case: NOOP.__bool__ returns False so `if langfuse:` fails."""
         self.assertFalse(bool(NOOP))
 
     def test_noop_is_falsy_in_if_check(self):
@@ -52,7 +50,6 @@ class TestNoopProxy(unittest.TestCase):
 
 
 class TestInit(unittest.TestCase):
-    """AC2: init() gracefully falls back to NOOP on ImportError."""
 
     def test_returns_noop_when_langfuse_not_installed(self):
         with patch.dict("sys.modules", {"langfuse": None}):
@@ -61,8 +58,6 @@ class TestInit(unittest.TestCase):
         self.assertFalse(ctx["enabled"])
 
     def test_no_exception_on_import_error(self):
-        # Simulate langfuse not installed by making sys.modules["langfuse"] unavailable
-        # and ensuring env vars are set so init() actually tries the import path
         env = {"LANGFUSE_PUBLIC_KEY": "pub", "LANGFUSE_SECRET_KEY": "sec"}
         import sys as _sys
         original = _sys.modules.pop("langfuse", _sys.modules.get("langfuse"))
@@ -73,6 +68,8 @@ class TestInit(unittest.TestCase):
                     ctx = tracing.init()
                 except Exception as e:
                     self.fail(f"init() raised unexpectedly: {e}")
+                self.assertIs(ctx["langfuse"], tracing.NOOP)
+                self.assertFalse(ctx["enabled"])
         finally:
             if original is None:
                 _sys.modules.pop("langfuse", None)
@@ -106,7 +103,6 @@ class TestInit(unittest.TestCase):
 
 
 class TestSessionTraceId(unittest.TestCase):
-    """AC3: session_trace_id is deterministic."""
 
     def test_returns_32_char_hex(self):
         result = tracing.session_trace_id("test-session-id")
@@ -130,7 +126,6 @@ class TestSessionTraceId(unittest.TestCase):
 
 
 class TestTrace(unittest.TestCase):
-    """AC4: audit.jsonl writes are best-effort."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -194,7 +189,6 @@ class TestTrace(unittest.TestCase):
 
 
 class TestFlush(unittest.TestCase):
-    """AC5: flush() uses sync shutdown."""
 
     def test_calls_shutdown_when_enabled(self):
         mock_langfuse = MagicMock()
@@ -220,15 +214,12 @@ class TestFlush(unittest.TestCase):
 
 
 class TestGetOrCreateTrace(unittest.TestCase):
-    """Edge case: get_or_create_trace with NOOP langfuse returns NOOP."""
 
     def test_returns_noop_when_not_enabled(self):
         result = tracing.get_or_create_trace(NOOP, False, None, "scope", "session-id")
         self.assertIs(result, NOOP)
 
     def test_returns_noop_when_langfuse_is_noop_but_enabled(self):
-        # enabled=True but langfuse=NOOP — db would return no pipeline state
-        # Should return NOOP (no pipeline state found)
         mock_db = MagicMock()
         with patch("src.claude_gates.tracing._get_pipeline_state", return_value=None):
             result = tracing.get_or_create_trace(NOOP, True, mock_db, "scope", "session-id")
@@ -236,7 +227,6 @@ class TestGetOrCreateTrace(unittest.TestCase):
 
 
 class TestScopeSpan(unittest.TestCase):
-    """scope_span delegates to trace.span()."""
 
     def test_calls_span_with_name(self):
         mock_trace = MagicMock()
@@ -256,7 +246,6 @@ class TestScopeSpan(unittest.TestCase):
 
 
 class TestScore(unittest.TestCase):
-    """score() with NOOP silently no-ops via proxy chain."""
 
     def test_calls_trace_score_when_enabled(self):
         mock_trace = MagicMock()
@@ -277,14 +266,13 @@ class TestScore(unittest.TestCase):
     def test_score_passes_correct_fields(self):
         mock_trace = MagicMock()
         tracing.score(mock_trace, True, "verdict", "REVISE", "needs work")
+        mock_trace.score.assert_called_once()
         call_kwargs = mock_trace.score.call_args
         args, kwargs = call_kwargs
-        # may be positional or keyword
         if kwargs:
             self.assertEqual(kwargs.get("name") or (args[0] if args else None), "verdict")
         else:
-            # called with a dict
-            self.assertTrue(True)
+            self.assertIn("verdict", str(args))
 
 
 if __name__ == "__main__":

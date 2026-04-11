@@ -168,8 +168,14 @@ def _parse_step_array(inner: str) -> Optional[VerificationStep]:
     if not agent_name or not re.match(r"^[A-Za-z0-9_-]+$", agent_name):
         return None
 
-    if is_transform:
-        max_rounds_raw = int(parts[1]) if len(parts) >= 2 else 1
+    if is_transform and len(parts) <= 2:
+        if len(parts) >= 2:
+            try:
+                max_rounds_raw = int(parts[1])
+            except ValueError:
+                return None
+        else:
+            max_rounds_raw = 1
         tr_step: ITransformStep = {
             "type": StepType.Transform,
             "agent": agent_name,
@@ -178,9 +184,13 @@ def _parse_step_array(inner: str) -> Optional[VerificationStep]:
         return tr_step
 
     # VERIFY or VERIFY_W_FIXER
-    max_rounds = int(parts[1]) if len(parts) >= 2 else 3
-    if not isinstance(max_rounds, int):
-        return None
+    if len(parts) >= 2:
+        try:
+            max_rounds = int(parts[1])
+        except ValueError:
+            return None
+    else:
+        max_rounds = 3
 
     if len(parts) >= 3:
         raw_fixer = _unquote(parts[2])
@@ -219,8 +229,7 @@ def _split_csv(s: str) -> List[str]:
             in_quote = True
             quote_char = ch
         elif ch == ",":
-            if current.strip():
-                parts.append(current.strip())
+            parts.append(current.strip())
             current = ""
         else:
             current += ch
