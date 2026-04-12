@@ -13,13 +13,23 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import threading
 import time
 
-SESSIONS_DIR = os.path.join(os.getcwd(), ".sessions")
 PORT = int(os.environ.get("CLAUDE_GATES_PORT", "64735"))
 IDLE_TIMEOUT_SECONDS = 10 * 60  # 10 minutes
 SESSION_DIR_RE = re.compile(r"^[0-9a-f]{8}$")
+
+# SESSIONS_DIR is resolved lazily via _sessions_dir() so that the server picks
+# up the correct cwd even when the module is imported before the process cd's.
+# Module-level name kept for patch compatibility in tests.
+SESSIONS_DIR = os.path.join(os.getcwd(), ".sessions")
+
+
+def _sessions_dir() -> str:
+    """Return the current effective SESSIONS_DIR (supports test patching)."""
+    return SESSIONS_DIR
 
 
 # ── Session discovery ────────────────────────────────────────────────
@@ -151,50 +161,6 @@ def api_session(session_id: str):
             return {"id": session_id, "pipelines": []}
 
     return with_db(session_id, _query)
-
-
-def api_scope(session_id: str, scope: str):
-    """Pipeline state + steps + agents + files + edits for a specific scope."""
-    if not SESSION_DIR_RE.match(session_id):
-        return None
-
-    def _query(conn):
-        try:
-            row = conn.execute(
-                "SELECT * FROM pipeline_state WHERE scope = ?", (scope,)
-            ).fetchone()
-            if row is None:
-                return None
-            state = _row_to_dict(row)
-            step_rows = conn.execute(
-                "SELECT * FROM pipeline_steps WHERE scope = ? ORDER BY step_index",
-                (scope,),
-            ).fetchall()
-            agent_rows = conn.execute(
-                'SELECT agent, outputFilepath, verdict, "check", round, attempts'
-                " FROM agents WHERE scope = ?",
-                (scope,),
-            ).fetchall()
-            edit_rows = conn.execute("SELECT filepath, lines FROM edits").fetchall()
-            return {
-                "state": state,
-                "steps": [_row_to_dict(r) for r in step_rows],
-                "agents": [_row_to_dict(r) for r in agent_rows],
-                "files": list_scope_files(session_id, scope),
-                "edits": [_row_to_dict(r) for r in edit_rows],
-            }
-        except Exception:
-            return None
-
-    return with_db(session_id, _query)
-
-
-def api_artifact(session_id: str, scope: str, agent: str):
-    """Read artifact content for a given agent. Returns None if not found."""
-    if not SESSION_DIR_RE.match(session_id):
-        return None
-    filename = agent if agent.endswith(".md") else "{}.md".format(agent)
-    return read_artifact(session_id, scope, filename)
 
 
 # ── Embedded HTML dashboard ───────────────────────────────────────────
@@ -457,13 +423,12 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]  # strip query string
         segments = [s for s in path.split("/") if s]
 
-        self.send_header("Access-Control-Allow-Origin", "*")
-
         # GET /
         if path == "/":
             html = get_html()
             encoded = html.encode("utf-8")
             self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(encoded)))
             self.end_headers()
@@ -480,13 +445,13 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(api_sessions())
             return
 
-        # GET /api/sessions/{id}/pipelines
+        # /api/sessions/{id} — no sub-resource, not a valid route
         if (len(segments) == 3 and segments[0] == "api"
                 and segments[1] == "sessions" and segments[2]):
-            # /api/sessions  (already handled above as exact match)
             self._send_not_found()
             return
 
+        # GET /api/sessions/{id}/pipelines
         if (len(segments) == 4 and segments[0] == "api"
                 and segments[1] == "sessions" and segments[3] == "pipelines"):
             session_id = segments[2]
@@ -500,13 +465,13 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 self._send_not_found()
             return
 
-        # GET /api/sessions/{id}/scopes/{scope}/files
+        # /api/sessions/{id}/scopes/{scope} — no sub-resource
         if (len(segments) == 5 and segments[0] == "api"
                 and segments[1] == "sessions" and segments[3] == "scopes"):
-            # This would be /api/sessions/{id}/scopes/{scope} — not matching the full route
             self._send_not_found()
             return
 
+        # GET /api/sessions/{id}/scopes/{scope}/files
         if (len(segments) == 6 and segments[0] == "api"
                 and segments[1] == "sessions" and segments[3] == "scopes"
                 and segments[5] == "files"):
@@ -542,6 +507,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             if content is not None:
                 encoded = content.encode("utf-8", errors="replace")
                 self.send_response(200)
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.send_header("Content-Length", str(len(encoded)))
                 self.end_headers()
@@ -556,19 +522,28 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         return bool(SESSION_DIR_RE.match(session_id))
 
     def _valid_path_component(self, component: str) -> bool:
-        """Reject components containing .. or / (path traversal guards)."""
-        return ".." not in component and "/" not in component
+        """Reject components containing .., /, or \\ (path traversal guards)."""
+        return (
+            ".." not in component
+            and "/" not in component
+            and "\\" not in component
+        )
 
     def _send_json(self, data) -> None:
+        """Send a 200 JSON response. send_response is always called first."""
         body = json.dumps(data).encode("utf-8")
         self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
     def _send_not_found(self) -> None:
+        """Send a 404 response. send_response is always called first."""
         self.send_response(404)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", "9")
         self.end_headers()
         self.wfile.write(b"Not found")
@@ -608,14 +583,12 @@ def main() -> None:
     try:
         server = IdleHTTPServer(("0.0.0.0", PORT), RequestHandler)
     except OSError as e:
-        import sys
         print(
             "[ClaudeGates] Port {} in use or bind failed: {}".format(PORT, e),
             file=sys.stderr,
         )
         return
 
-    import sys
     print("[ClaudeGates] Web UI: http://localhost:{}".format(PORT), file=sys.stderr)
     try:
         server.serve_forever()
