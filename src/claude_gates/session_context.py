@@ -76,16 +76,20 @@ def discover_gated_agents(
             if name in seen:
                 continue
 
+            filepath = os.path.join(agents_path, filename)
             try:
-                filepath = os.path.join(agents_path, filename)
                 with open(filepath, "r", encoding="utf-8") as f:
                     content = f.read()
+            except OSError:
+                # Unreadable file — spec-required skip
+                continue
+            try:
                 steps = parser.parse_verification(content)
                 if steps is not None:
                     seen.add(name)
                     results.append({"name": name, "source": source, "steps": steps})  # type: ignore[arg-type,typeddict-item]
             except Exception:
-                # Skip unreadable or unparseable files
+                # Skip files whose frontmatter cannot be parsed
                 pass
 
     if project_dir:

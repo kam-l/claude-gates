@@ -428,17 +428,17 @@ class TestBackslashPathTraversal(unittest.TestCase):
         self.assertTrue(handler._valid_path_component("artifact.md"))
 
     def test_filename_with_backslash_rejected_by_route(self):
-        """Scope or filename containing literal backslash is rejected with 404."""
+        """Route rejects filename containing literal backslash with 404."""
         _make_session_db(self.sessions_dir, "abcd1234")
         scope_dir = os.path.join(self.sessions_dir, "abcd1234", "my-scope")
         os.makedirs(scope_dir)
         from src.claude_gates import web_server
-        # Simulate a scope component with a backslash
-        handler = RequestHandler = web_server.RequestHandler
-        h = _make_handler_get("/api/sessions/abcd1234/scopes/my-scope/files/artifact.md")
-        # Manually test _valid_path_component with backslash
-        h2 = web_server.RequestHandler.__new__(web_server.RequestHandler)
-        self.assertFalse(h2._valid_path_component("evil\\traversal"))
+        # URL with a literal backslash in the filename position
+        handler = _make_handler_get("/api/sessions/abcd1234/scopes/my-scope/files/evil\\traversal.md")
+        with patch.object(web_server, 'SESSIONS_DIR', self.sessions_dir):
+            handler.do_GET()
+        self.assertEqual(handler._response_code, 404,
+                         "Route must return 404 when filename contains a backslash")
 
 
 # ---------------------------------------------------------------------------

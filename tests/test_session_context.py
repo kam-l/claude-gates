@@ -58,15 +58,6 @@ name: simple
 Simple agent with no pipeline fields.
 """
 
-GATED_AGENT_MD_SIMPLE = """\
----
-name: cleaner
-verification:
-  - [cleaner!, 1]
----
-Cleaner agent.
-"""
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AC1: format_step renders each step type correctly
@@ -219,13 +210,11 @@ class TestDiscoverGatedAgents(unittest.TestCase):
         _write_agent_md(self.project_tmp, "alpha", GATED_AGENT_MD)
         _write_agent_md(self.global_tmp, "beta", GATED_AGENT_MD)
         agents = self.discover(self.project_tmp, self.global_tmp)
-        sources = [a["source"] for a in agents]
-        # project agents first
-        self.assertIn("project", sources)
-        self.assertIn("global", sources)
-        proj_idx = sources.index("project")
-        glob_idx = sources.index("global")
-        self.assertLess(proj_idx, glob_idx)
+        self.assertEqual(len(agents), 2)
+        self.assertEqual(agents[0]["name"], "alpha")
+        self.assertEqual(agents[0]["source"], "project")
+        self.assertEqual(agents[1]["name"], "beta")
+        self.assertEqual(agents[1]["source"], "global")
 
     def test_only_md_files_included(self):
         """Non-.md files in agents dir are ignored."""

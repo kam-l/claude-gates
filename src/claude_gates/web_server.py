@@ -21,15 +21,9 @@ PORT = int(os.environ.get("CLAUDE_GATES_PORT", "64735"))
 IDLE_TIMEOUT_SECONDS = 10 * 60  # 10 minutes
 SESSION_DIR_RE = re.compile(r"^[0-9a-f]{8}$")
 
-# SESSIONS_DIR is resolved lazily via _sessions_dir() so that the server picks
-# up the correct cwd even when the module is imported before the process cd's.
-# Module-level name kept for patch compatibility in tests.
+# SESSIONS_DIR is frozen to os.getcwd() at module import time.
+# Tests patch this name directly via patch.object(web_server, 'SESSIONS_DIR', ...).
 SESSIONS_DIR = os.path.join(os.getcwd(), ".sessions")
-
-
-def _sessions_dir() -> str:
-    """Return the current effective SESSIONS_DIR (supports test patching)."""
-    return SESSIONS_DIR
 
 
 # ── Session discovery ────────────────────────────────────────────────
