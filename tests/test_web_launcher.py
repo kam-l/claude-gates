@@ -321,13 +321,41 @@ class TestConstants(unittest.TestCase):
             f"PID_FILE={web_launcher.PID_FILE!r} does not end with .sessions/.webui.pid"
         )
 
-    def test_port_constant(self):
+    def test_port_constant_default(self):
         """PORT defaults to 64735 when env var not set."""
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("CLAUDE_GATES_PORT", None)
-            import importlib
             # Re-evaluate the module's PORT constant logic by checking default
             self.assertEqual(int(os.environ.get("CLAUDE_GATES_PORT", "64735")), 64735)
+
+    def test_port_env_var_passed_to_subprocess(self):
+        """CLAUDE_GATES_PORT env var override is forwarded to spawned subprocess env."""
+        tmp = tempfile.mkdtemp()
+        pid_file = os.path.join(tmp, ".sessions", ".webui.pid")
+
+        mock_child = MagicMock()
+        mock_child.pid = 7777
+
+        # Patch the module-level PORT to a custom value to simulate env override
+        custom_port = 12345
+
+        with patch("src.claude_gates.web_launcher.PID_FILE", pid_file), \
+             patch("src.claude_gates.web_launcher._health_check", return_value=False), \
+             patch("src.claude_gates.web_launcher._clean_stale_pid"), \
+             patch("src.claude_gates.web_launcher.PORT", custom_port), \
+             patch("os.makedirs"), \
+             patch("sys.platform", "linux"), \
+             patch("subprocess.Popen", return_value=mock_child) as mock_popen, \
+             patch("builtins.open", mock_open()):
+            web_launcher.launch({})
+
+        mock_popen.assert_called_once()
+        kwargs = mock_popen.call_args[1]
+        env_passed = kwargs.get("env", {})
+        self.assertEqual(env_passed.get("CLAUDE_GATES_PORT"), str(custom_port))
+
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
 
     def test_script_constant(self):
         """SCRIPT must point to scripts/WebServer.py."""

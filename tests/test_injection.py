@@ -397,6 +397,25 @@ class TestVerifierRoleInjection(unittest.TestCase):
 
         self.assertEqual(result, {})
 
+    def test_verifier_gate_round_denominator_reflects_max_rounds(self):
+        """gate_round denominator uses actual max_rounds, not a hardcoded default."""
+        from src.claude_gates.types import StepType
+
+        repo, engine, conn = _make_repo_and_engine()
+        engine.create_pipeline(
+            "scope-mr5",
+            "gt-source",
+            [{"type": StepType.Verify, "agent": "gt-reviewer", "maxRounds": 5}],
+        )
+
+        with tempfile.TemporaryDirectory() as session_dir:
+            result = self._run_injection(session_dir, repo, engine, conn)
+
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        # Denominator must be 5, not the default 3
+        self.assertIn("gate_round=1/5", ctx)
+        self.assertNotIn("gate_round=1/3", ctx)
+
 
 # ── AC5: Fixer role injection ─────────────────────────────────────────────
 
@@ -503,6 +522,31 @@ class TestFixerRoleInjection(unittest.TestCase):
                 })
 
         self.assertEqual(result, {})
+
+    def test_fixer_gate_round_denominator_reflects_max_rounds(self):
+        """Fixer gate_round denominator uses actual max_rounds, not a hardcoded default."""
+        from src.claude_gates.types import StepType, StepStatus
+
+        repo, engine, conn = _make_repo_and_engine()
+        engine.create_pipeline(
+            "fix-scope-mr4",
+            "gt-source",
+            [{"type": StepType.VerifyWithFixer, "agent": "gt-reviewer", "maxRounds": 4, "fixer": "gt-fixer"}],
+        )
+        # round=1 when fixer runs (after first revision)
+        repo.update_step_status("fix-scope-mr4", 0, StepStatus.Fix, round=1)
+
+        with tempfile.TemporaryDirectory() as session_dir:
+            marker_path = os.path.join(session_dir, ".pending-scope-gt-fixer")
+            with open(marker_path, "w") as f:
+                f.write("fix-scope-mr4")
+
+            result = self._run_fixer_injection(session_dir, repo, engine, conn)
+
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        # gate_round=2/4 (round=1 → round+1=2, max_rounds=4)
+        self.assertIn("gate_round=2/4", ctx)
+        self.assertNotIn("gate_round=2/3", ctx)
 
 
 # ── AC6: Reviewer findings appended if verification file exists ───────────
