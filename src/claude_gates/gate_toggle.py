@@ -4,7 +4,7 @@ import sys
 from claude_gates.messaging import block, fmt
 from claude_gates.session import is_gate_disabled, set_gate_disabled
 
-TOGGLE_PATTERN = re.compile(r"^gates?\s+(on|off|status)$", re.IGNORECASE)
+TOGGLE_PATTERN = re.compile(r"^gates? (on|off|status)$", re.IGNORECASE)
 
 
 def parse_toggle_command(prompt: str) -> "str | None":
