@@ -67,7 +67,8 @@ def on_pre_tool_use(data: dict) -> dict:
 
     session_dir = get_session_dir(session_id)
 
-    # Surface queued notifications from SubagentStop (side-channel)
+    # Drain notifications BEFORE DB open so we hold the text, but surface them
+    # even if DB fails — notifications must not be silently lost on DB error.
     pending: Optional[str] = messaging.drain_notifications(session_dir)
 
     actions: Optional[List[Dict[str, Any]]] = None
@@ -78,6 +79,12 @@ def on_pre_tool_use(data: dict) -> dict:
         repo = PipelineRepository(db)
         engine = PipelineEngine(repo)
         actions = engine.get_all_next_actions()
+    except Exception:
+        # DB unavailable — fail-open, but surface any drained notifications first
+        if pending:
+            cleaned = pending.replace("[ClaudeGates] ", "")
+            return messaging.info("", cleaned)
+        return {}
     finally:
         if db is not None:
             db.close()
@@ -120,9 +127,7 @@ def on_pre_tool_use(data: dict) -> dict:
     # Write/Edit scoped to session artifacts — allow writes to non-session paths
     if tool_name in ("Write", "Edit"):
         target_path = (tool_input.get("file_path") or "").replace("\\", "/")
-        # Normalize session_dir too (get_session_dir already does this, but be explicit)
-        normalized_session_dir = session_dir.replace("\\", "/")
-        if not target_path or not target_path.startswith(normalized_session_dir + "/"):
+        if not target_path or not target_path.startswith(session_dir.replace("\\", "/") + "/"):
             return {}
 
     # Agent tool: allow expected agents (any scope expecting this agent name)
@@ -157,6 +162,11 @@ def on_pre_tool_use(data: dict) -> dict:
             verb = "Resume" if round_num > 0 else "Spawn"
             reason = _source_reason(act)
             parts.append(f"{verb} {agent} (scope={scope}){reason}")
+
+    # Guard: if no parts were built (e.g. all actions have unrecognized types in second loop),
+    # avoid sending "Do these first:" with no content — fail-open instead.
+    if not parts:
+        return {}
 
     # Langfuse: trace block decisions — session-level trace with scope spans
     try:
