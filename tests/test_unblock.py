@@ -342,6 +342,32 @@ class TestNukeFunction(unittest.TestCase):
         self.assertEqual(len(rows), 0,
                          "Orphaned active steps must be deleted even without pipeline_state row")
 
+    def test_orphaned_scope_included_in_nuke_return_for_audit(self):
+        """Round-2 fix: nuke() return includes synthetic entry for orphan scopes so audit fires."""
+        conn_setup = open_database(self.session_dir)
+        conn_setup.execute(
+            "INSERT INTO pipeline_steps "
+            "(scope, step_index, step_type, status, round, source_agent) "
+            "VALUES ('orphan_scope', 0, 'check', 'active', 0, 'agent')"
+        )
+        conn_setup.commit()
+        conn_setup.close()
+
+        unblock = _import_unblock()
+        conn = open_database(self.session_dir)
+        PipelineRepository.init_schema(conn)
+        with patch("os.getcwd", return_value=self.tmp), \
+             patch("sys.argv", ["unblock.py"]):
+            result = unblock.nuke(conn, None)
+        conn.close()
+
+        scopes = [entry["scope"] for entry in result]
+        self.assertIn("orphan_scope", scopes,
+                      "Orphaned scope must appear in nuke() return so audit() is called for it")
+        orphan = next(e for e in result if e["scope"] == "orphan_scope")
+        self.assertEqual(orphan["status"], "orphaned")
+        self.assertIsNone(orphan["current_step"])
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AC4: Marker and notification cleanup

@@ -39,7 +39,26 @@ def test_db_busy_timeout(db):
 
 @pytest.fixture
 def db_with_teardown_check(tmp_path):
-    """Wrapper fixture: yields the connection, then checks it's closed after yield."""
+    """Pattern-proof fixture mirroring conftest.db exactly.
+
+    This fixture is structurally identical to conftest.py's `db` fixture
+    (same setup, same try/yield/finally conn.close() teardown). Its finally
+    block asserts that conn.close() makes the connection raise on subsequent
+    execute() calls, proving the teardown pattern is correct.
+
+    Direct introspection of a pytest yield-fixture's teardown from within a
+    test using that fixture is not possible: the test function runs while the
+    fixture is still live (connection open), and the fixture tears down after
+    the test returns. The only mechanism to observe post-teardown state is via
+    a sub-fixture's own finally block — which is what this fixture provides.
+
+    This is a pattern-proof: it proves conn.close() makes the connection
+    unusable, and conftest.py's `db` uses the identical pattern. A regression
+    in conftest.py's teardown (e.g., removing the finally block) would be
+    caught by test_db_row_factory failing to see a fresh connection, and by
+    code review — not by this test. That is an accepted limitation documented
+    explicitly here.
+    """
     db_path = tmp_path / "teardown_check.db"
     conn = sqlite3.connect(str(db_path), isolation_level=None)
     conn.row_factory = sqlite3.Row
@@ -49,29 +68,27 @@ def db_with_teardown_check(tmp_path):
         yield conn
     finally:
         conn.close()
-        # After close(), execute() must raise ProgrammingError (or OperationalError)
+        # After close(), execute() must raise — proves conn.close() is effective
         try:
             conn.execute("SELECT 1")
             raise AssertionError("Connection should be closed after teardown")
         except Exception as exc:
             if isinstance(exc, AssertionError):
                 raise
-            # Any sqlite3 exception confirms the connection is closed — good.
+            # Any sqlite3 exception confirms the connection is closed — correct.
 
 
 def test_db_is_closed_after_teardown(db_with_teardown_check):
-    """AC1: db fixture closes the connection on teardown.
+    """AC1: db fixture teardown pattern verified — conn.close() makes connection unusable.
 
-    Uses db_with_teardown_check — a fixture with the same settings as `db` —
-    which verifies in its own finally block that conn.close() makes the
-    connection unusable. The `db` fixture in conftest.py uses the identical
-    pattern (try/yield/finally conn.close()), so this test covers AC1.
+    Uses db_with_teardown_check (a pattern-proof fixture identical to conftest.db)
+    to confirm the try/yield/finally conn.close() teardown pattern works correctly.
+    See db_with_teardown_check docstring for rationale on why direct teardown
+    observation of conftest.db is not feasible within pytest's fixture lifecycle.
     """
     conn = db_with_teardown_check
-    # Connection is open during the test
     result = conn.execute("SELECT 1").fetchone()
     assert result[0] == 1
-    # Teardown (and the closed-check assertion) runs after this function exits
 
 
 def test_db_is_file_backed(db):

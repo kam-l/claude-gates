@@ -150,7 +150,15 @@ def nuke(conn, scope):
 
     PipelineRepository.transact(conn, _do_delete)
     print("Pipelines deleted.")
-    return stuck_pipelines
+
+    # Synthesize audit entries for orphaned-step-only scopes (no pipeline_state row)
+    pipeline_scopes = {p["scope"] for p in stuck_pipelines}
+    step_scopes = {s["scope"] for s in stuck_steps}
+    orphan_entries = [
+        {"scope": s, "status": "orphaned", "current_step": None}
+        for s in step_scopes - pipeline_scopes
+    ]
+    return stuck_pipelines + orphan_entries
 
 
 def clear_markers(session_dir, scope):
