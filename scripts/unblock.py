@@ -43,8 +43,9 @@ def find_session_dir():
 
     if args and args[0]:
         arg = args[0]
-        # Try get_session_dir first (strips dashes, takes first 8 chars)
-        candidate = session.get_session_dir(arg)
+        # Construct short-id path without calling get_session_dir (avoids makedirs side-effect)
+        short_id = arg.replace("-", "")[:8]
+        candidate = os.path.join(sessions_root, short_id)
         if os.path.exists(os.path.join(candidate, "session.db")):
             return candidate
         # Fall back to raw argument as directory name
@@ -131,8 +132,11 @@ def nuke(conn, scope):
         )
 
     # Nuclear delete in a single transaction
+    # Collect scopes from both pipeline_state rows AND orphaned steps
     def _do_delete():
-        scopes = [p["scope"] for p in stuck_pipelines]
+        pipeline_scopes = {p["scope"] for p in stuck_pipelines}
+        step_scopes = {s["scope"] for s in stuck_steps}
+        scopes = pipeline_scopes | step_scopes
         for s in scopes:
             conn.execute("DELETE FROM pipeline_steps WHERE scope = ?", (s,))
             conn.execute("DELETE FROM pipeline_state WHERE scope = ?", (s,))
@@ -155,7 +159,7 @@ def clear_markers(session_dir, scope):
     Also removes .pipeline-notifications if present.
 
     When scope is given, removes only markers matching that specific scope.
-    Returns count of files cleaned.
+    Returns list of cleaned filenames (callers may use len() for the count).
     """
     cleaned = []
     try:
@@ -190,7 +194,7 @@ def clear_markers(session_dir, scope):
     if cleaned:
         print(f"Cleaned {len(cleaned)} marker/notification file(s).")
 
-    return len(cleaned)
+    return cleaned
 
 
 def audit(session_dir, pipeline, markers):
@@ -230,14 +234,13 @@ def main():
 
         if not nuked:
             print("Nothing stuck.")
-            conn.close()
             sys.exit(0)
 
-        cleaned_count = clear_markers(session_dir, scope)
+        cleaned = clear_markers(session_dir, scope)
 
-        # Audit via tracing
+        # Audit via tracing — pass actual cleaned filenames
         for p in nuked:
-            audit(session_dir, p, [])
+            audit(session_dir, p, cleaned)
 
         print("\nUnblocked. Retry your action.")
     finally:

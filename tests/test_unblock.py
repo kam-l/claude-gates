@@ -8,10 +8,10 @@ Acceptance Criteria:
 5. Audit trail via Tracing
 """
 
+import io
 import json
 import os
 import shutil
-import sqlite3
 import sys
 import tempfile
 import unittest
@@ -170,10 +170,10 @@ class TestFindSessionDirExplicit(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertIn("abcdef12", result)
 
-    def test_explicit_session_id_with_get_session_dir(self):
-        """AC2: Tries get_session_dir(arg) first — resolves correctly for 8-char short id."""
+    def test_explicit_session_id_with_short_id_path(self):
+        """AC2: Short-id path construction (strip dashes, first 8 chars) resolves correctly."""
         session_dir = _make_session(self.sessions_dir, "deadbeef")
-        # get_session_dir strips dashes and takes first 8 chars
+        # arg "deadbeef" -> short_id "deadbeef" -> .sessions/deadbeef/
         result = self._find(["deadbeef"])
         self.assertIsNotNone(result)
 
@@ -187,10 +187,23 @@ class TestFindSessionDirExplicit(unittest.TestCase):
         # Create dir but no DB
         no_db = os.path.join(self.sessions_dir, "nodb1234")
         os.makedirs(no_db)
-        import io
-        with patch("sys.stderr", io.StringIO()) as mock_err:
+        mock_stderr = io.StringIO()
+        with patch("sys.stderr", mock_stderr):
             result = self._find(["nodb1234"])
         self.assertIsNone(result)
+        self.assertIn('No session.db found', mock_stderr.getvalue())
+
+    def test_invalid_id_does_not_create_orphaned_dir(self):
+        """CRITICAL fix: failed lookup must not create spurious dirs in .sessions/."""
+        entries_before = set(os.listdir(self.sessions_dir))
+        with patch("os.getcwd", return_value=self.tmp), \
+             patch("sys.argv", ["unblock.py", "badid999"]):
+            unblock = _import_unblock()
+            result = unblock.find_session_dir()
+        entries_after = set(os.listdir(self.sessions_dir))
+        self.assertIsNone(result)
+        self.assertEqual(entries_before, entries_after,
+                         "No new dirs should be created for an invalid session ID")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -309,6 +322,26 @@ class TestNukeFunction(unittest.TestCase):
         conn.close()
         self.assertEqual(len(rows), 0)
 
+    def test_orphaned_steps_are_deleted(self):
+        """IMPORTANT-2 fix: stuck_steps with no matching pipeline_state are still deleted."""
+        # Insert a step with no corresponding pipeline_state row
+        conn_setup = open_database(self.session_dir)
+        conn_setup.execute(
+            "INSERT INTO pipeline_steps "
+            "(scope, step_index, step_type, status, round, source_agent) "
+            "VALUES ('orphan_scope', 0, 'check', 'active', 0, 'agent')"
+        )
+        conn_setup.commit()
+        conn_setup.close()
+
+        conn = self._nuke()
+        rows = conn.execute(
+            "SELECT * FROM pipeline_steps WHERE scope = 'orphan_scope'"
+        ).fetchall()
+        conn.close()
+        self.assertEqual(len(rows), 0,
+                         "Orphaned active steps must be deleted even without pipeline_state row")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AC4: Marker and notification cleanup
@@ -361,12 +394,15 @@ class TestClearMarkers(unittest.TestCase):
         self._clear()
         self.assertTrue(os.path.exists(other))
 
-    def test_returns_count_of_cleaned_files(self):
-        """AC4: Returns count of cleaned files."""
+    def test_returns_list_of_cleaned_files(self):
+        """AC4: Returns list of cleaned filenames (not just count)."""
         self._make_file(".running-scope1")
         self._make_file(".pending-scope-xyz")
-        count = self._clear()
-        self.assertEqual(count, 2)
+        result = self._clear()
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 2)
+        self.assertIn(".running-scope1", result)
+        self.assertIn(".pending-scope-xyz", result)
 
     def test_scope_filter_removes_only_matching_running_marker(self):
         """AC4: When scope given, removes only .running-{scope} marker."""
@@ -376,10 +412,10 @@ class TestClearMarkers(unittest.TestCase):
         self.assertFalse(os.path.exists(marker1))
         self.assertTrue(os.path.exists(marker2))
 
-    def test_no_markers_returns_zero(self):
-        """AC4: Returns 0 when no markers present."""
-        count = self._clear()
-        self.assertEqual(count, 0)
+    def test_no_markers_returns_empty_list(self):
+        """AC4: Returns empty list when no markers present."""
+        result = self._clear()
+        self.assertEqual(result, [])
 
     def test_scope_filter_removes_matching_pending_marker(self):
         """AC4: When scope given, also removes .pending-scope-{scope}."""
@@ -428,8 +464,12 @@ class TestAuditTrail(unittest.TestCase):
         self.assertEqual(entry["scope"], "scope1")
 
     def test_audit_includes_status_step_markers(self):
-        """AC5: audit entry includes status, step, markers fields."""
+        """AC5: audit entry includes status, step, markers fields with actual cleaned names."""
         _insert_stuck_pipeline(self.session_dir, "scope1")
+        # Place a marker file so clear_markers returns a non-empty list
+        marker_path = os.path.join(self.session_dir, ".running-scope1")
+        with open(marker_path, "w") as f:
+            f.write("")
         unblock = _import_unblock()
         conn = open_database(self.session_dir)
         PipelineRepository.init_schema(conn)
@@ -439,7 +479,7 @@ class TestAuditTrail(unittest.TestCase):
             nuked = unblock.nuke(conn, None)
             cleaned = unblock.clear_markers(self.session_dir, None)
             for p in nuked:
-                unblock.audit(self.session_dir, p, [])
+                unblock.audit(self.session_dir, p, cleaned)
         conn.close()
 
         audit_path = os.path.join(self.session_dir, "audit.jsonl")
@@ -448,6 +488,8 @@ class TestAuditTrail(unittest.TestCase):
         self.assertIn("status", entry)
         self.assertIn("step", entry)
         self.assertIn("markers", entry)
+        # Verify actual filenames are recorded, not hardcoded []
+        self.assertIn(".running-scope1", entry["markers"])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
