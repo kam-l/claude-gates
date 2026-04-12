@@ -283,27 +283,37 @@ class TestOpenReadonly(unittest.TestCase):
 
         captured = {}
         original_connect = sqlite3.connect
+        opened_conns = []
 
         def capturing_connect(*args, **kwargs):
             captured['args'] = args
             captured['kwargs'] = kwargs
-            return original_connect(*args, **kwargs)
+            conn = original_connect(*args, **kwargs)
+            opened_conns.append(conn)
+            return conn
 
-        with patch.object(web_server, 'SESSIONS_DIR', self.sessions_dir):
-            with patch('src.claude_gates.web_server.sqlite3') as mock_sqlite:
-                mock_sqlite.connect.side_effect = capturing_connect
-                mock_sqlite.Row = sqlite3.Row
+        try:
+            with patch.object(web_server, 'SESSIONS_DIR', self.sessions_dir):
+                with patch('src.claude_gates.web_server.sqlite3') as mock_sqlite:
+                    mock_sqlite.connect.side_effect = capturing_connect
+                    mock_sqlite.Row = sqlite3.Row
+                    try:
+                        web_server.open_readonly("abcd1234")
+                    except Exception:
+                        pass
+                    self.assertTrue(mock_sqlite.connect.called, "sqlite3.connect was not called")
+                    _, kwargs = mock_sqlite.connect.call_args
+                    # Must explicitly pass uri=True — not just rely on mode=ro in the path string
+                    self.assertTrue(
+                        kwargs.get('uri') is True,
+                        "sqlite3.connect must be called with uri=True, got kwargs={}".format(kwargs)
+                    )
+        finally:
+            for c in opened_conns:
                 try:
-                    web_server.open_readonly("abcd1234")
+                    c.close()
                 except Exception:
                     pass
-                self.assertTrue(mock_sqlite.connect.called, "sqlite3.connect was not called")
-                _, kwargs = mock_sqlite.connect.call_args
-                # Must explicitly pass uri=True — not just rely on mode=ro in the path string
-                self.assertTrue(
-                    kwargs.get('uri') is True,
-                    "sqlite3.connect must be called with uri=True, got kwargs={}".format(kwargs)
-                )
 
 
 # ---------------------------------------------------------------------------

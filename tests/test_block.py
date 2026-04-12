@@ -178,7 +178,7 @@ class TestSubagentCallersAllowed(unittest.TestCase):
         """Empty agent_type string is not a subagent exemption."""
         data = {
             "session_id": "abc12345",
-            "tool_name": "Write",
+            "tool_name": "Bash",  # Not allowlisted, not Write/Edit/Agent → reaches block path
             "agent_type": "",
         }
         result = _run_block(data, self.session_dir)
