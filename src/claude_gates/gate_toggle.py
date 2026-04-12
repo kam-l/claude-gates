@@ -1,7 +1,7 @@
 import re
 import sys
 
-from claude_gates.messaging import block, fmt
+from claude_gates.messaging import block
 from claude_gates.session import is_gate_disabled, set_gate_disabled
 
 TOGGLE_PATTERN = re.compile(r"^gates? (on|off|status)$", re.IGNORECASE)

@@ -387,6 +387,28 @@ class TestWriteEditNonSessionPaths(unittest.TestCase):
         # After normalization of both sides, session path should still be blocked
         self.assertEqual(result.get("decision"), "block")
 
+    def test_file_path_backslashes_pointing_to_session_dir_blocked(self):
+        """file_path with backslashes that resolves to session dir must be blocked.
+
+        This is the original failure mode: file_path arrives with Windows backslashes
+        (e.g., Claude Code on Windows) pointing to a session artifact. target_path is
+        normalized so the startswith comparison must still detect the session prefix.
+        """
+        from src.claude_gates import block
+        # file_path has backslashes but points into session_dir
+        win_file_path = (self.session_dir + "/myproject/artifact.md").replace("/", "\\")
+        data = {
+            "session_id": "abc12345",
+            "tool_name": "Write",
+            "tool_input": {"file_path": win_file_path},
+        }
+        # session_dir is forward-slash normalized (as get_session_dir always returns)
+        with patch("src.claude_gates.block.is_gate_disabled", return_value=False), \
+             patch("src.claude_gates.block.get_session_dir", return_value=self.session_dir):
+            result = block.on_pre_tool_use(data)
+        # target_path normalized + session_dir already normalized → must block
+        self.assertEqual(result.get("decision"), "block")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AC8: Agent tool spawning expected agent → allow
