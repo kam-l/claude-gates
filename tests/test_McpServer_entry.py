@@ -56,6 +56,14 @@ def _exec_script(env_overrides=None, extra_sys_modules=None, force_import_error=
             raise ImportError("No module named 'mcp'")
         return real_import(name, *args, **kwargs)
 
+    # When forcing import error, remove mcp_server from sys.modules cache
+    # so the import machinery fires and our __import__ patch intercepts it.
+    modules_to_remove = {}
+    if force_import_error:
+        for key in list(sys.modules.keys()):
+            if "mcp_server" in key:
+                modules_to_remove[key] = sys.modules.pop(key)
+
     ctx_managers = [
         patch("sys.stderr", fake_stderr),
         patch("sys.exit", side_effect=fake_exit),
@@ -66,13 +74,17 @@ def _exec_script(env_overrides=None, extra_sys_modules=None, force_import_error=
         ctx_managers.append(patch("builtins.__import__", side_effect=import_raising_error))
 
     import contextlib
-    with contextlib.ExitStack() as stack:
-        for cm in ctx_managers:
-            stack.enter_context(cm)
-        try:
-            exec(compile(source, _SCRIPT_PATH, "exec"), {"__file__": _SCRIPT_PATH})
-        except SystemExit:
-            pass
+    try:
+        with contextlib.ExitStack() as stack:
+            for cm in ctx_managers:
+                stack.enter_context(cm)
+            try:
+                exec(compile(source, _SCRIPT_PATH, "exec"), {"__file__": _SCRIPT_PATH})
+            except SystemExit:
+                pass
+    finally:
+        # Restore any modules we temporarily removed
+        sys.modules.update(modules_to_remove)
 
     path_snapshot = list(sys.path)
     sys.path[:] = orig_path
