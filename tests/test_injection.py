@@ -258,8 +258,15 @@ class TestScopeResolution(unittest.TestCase):
 class TestVerifierRoleInjection(unittest.TestCase):
     """AC4 - Verifier gets source artifact + round info."""
 
-    def _run_injection(self, session_dir, repo, engine, conn):
+    def _run_injection(self, session_dir, repo, engine, conn, scope=None):
         from src.claude_gates import injection
+
+        # Write pending-scope marker so scope resolution succeeds without needing
+        # a registered agent in the agents table (matches real SubagentStart flow).
+        if scope is not None:
+            marker_path = os.path.join(session_dir, ".pending-scope-gt-reviewer")
+            with open(marker_path, "w") as f:
+                f.write(scope)
 
         def fake_open_db(sd):
             return conn
@@ -286,7 +293,7 @@ class TestVerifierRoleInjection(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as session_dir:
-            result = self._run_injection(session_dir, repo, engine, conn)
+            result = self._run_injection(session_dir, repo, engine, conn, scope="scope1")
 
         self.assertIn("hookSpecificOutput", result)
         ctx = result["hookSpecificOutput"]["additionalContext"]
@@ -309,7 +316,7 @@ class TestVerifierRoleInjection(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as session_dir:
-            result = self._run_injection(session_dir, repo, engine, conn)
+            result = self._run_injection(session_dir, repo, engine, conn, scope="my-scope")
 
         ctx = result["hookSpecificOutput"]["additionalContext"]
         expected_artifact = f"{session_dir}/my-scope/gt-source.md"
@@ -336,7 +343,7 @@ class TestVerifierRoleInjection(unittest.TestCase):
             with open(fixer_artifact, "w") as f:
                 f.write("# Fixed content\n- addressed issues\n")
 
-            result = self._run_injection(session_dir, repo, engine, conn)
+            result = self._run_injection(session_dir, repo, engine, conn, scope="fixer-scope")
 
         ctx = result["hookSpecificOutput"]["additionalContext"]
         # Should use fixer artifact, not source agent artifact
@@ -357,7 +364,7 @@ class TestVerifierRoleInjection(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as session_dir:
             # Do NOT create fixer artifact
-            result = self._run_injection(session_dir, repo, engine, conn)
+            result = self._run_injection(session_dir, repo, engine, conn, scope="fixer-scope2")
 
         ctx = result["hookSpecificOutput"]["additionalContext"]
         # Should fall back to source agent artifact
@@ -409,7 +416,7 @@ class TestVerifierRoleInjection(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as session_dir:
-            result = self._run_injection(session_dir, repo, engine, conn)
+            result = self._run_injection(session_dir, repo, engine, conn, scope="scope-mr5")
 
         ctx = result["hookSpecificOutput"]["additionalContext"]
         # Denominator must be 5, not the default 3
