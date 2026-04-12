@@ -120,10 +120,14 @@ def on_pre_tool_use(data: dict) -> dict:
     # Write/Edit scoped to session artifacts — allow writes to non-session paths
     if tool_name in ("Write", "Edit"):
         target_path = (tool_input.get("file_path") or "").replace("\\", "/")
-        if not target_path or not target_path.startswith(session_dir + "/"):
+        # Normalize session_dir too (get_session_dir already does this, but be explicit)
+        normalized_session_dir = session_dir.replace("\\", "/")
+        if not target_path or not target_path.startswith(normalized_session_dir + "/"):
             return {}
 
     # Agent tool: allow expected agents (any scope expecting this agent name)
+    # Note: tool_input.subagent_type is the agent being spawned (Agent tool input field).
+    #       data.agent_type (caller_agent above) is the hook caller identity — distinct fields.
     if tool_name == "Agent":
         subagent_type = tool_input.get("subagent_type") or ""
         if subagent_type in expected_agent_names:

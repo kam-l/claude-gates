@@ -368,6 +368,25 @@ class TestWriteEditNonSessionPaths(unittest.TestCase):
         result = _run_block(data, self.session_dir)
         self.assertEqual(result, {})
 
+    def test_session_dir_backslash_in_comparison(self):
+        """If session_dir itself has backslashes, the comparison must still block session writes."""
+        from src.claude_gates import block
+        # Simulate a session_dir with backslashes (Windows path not yet normalized)
+        win_session_dir = self.session_dir.replace("/", "\\")
+        # The file_path uses forward slashes but matches the session_dir location
+        file_path = self.session_dir + "/myproject/artifact.md"
+        data = {
+            "session_id": "abc12345",
+            "tool_name": "Write",
+            "tool_input": {"file_path": file_path},
+        }
+        # Patch get_session_dir to return backslash version
+        with patch("src.claude_gates.block.is_gate_disabled", return_value=False), \
+             patch("src.claude_gates.block.get_session_dir", return_value=win_session_dir):
+            result = block.on_pre_tool_use(data)
+        # After normalization of both sides, session path should still be blocked
+        self.assertEqual(result.get("decision"), "block")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AC8: Agent tool spawning expected agent → allow
@@ -409,6 +428,21 @@ class TestAgentToolSpawningExpectedAgent(unittest.TestCase):
             "session_id": "abc12345",
             "tool_name": "Agent",
             "tool_input": {"subagent_type": "reviewer"},
+        }
+        result = _run_block(data, self.session_dir)
+        self.assertEqual(result, {})
+
+    def test_agent_tool_uses_subagent_type_not_agent_type(self):
+        """AC8 uses tool_input.subagent_type (the spawned agent), not data.agent_type (caller).
+        These are distinct: data.agent_type empty = orchestrator caller; tool_input.subagent_type
+        = the Agent tool target. Using agent_type from tool_input would be the wrong field."""
+        data = {
+            "session_id": "abc12345",
+            "tool_name": "Agent",
+            # Correct field: subagent_type = the agent being spawned
+            "tool_input": {"subagent_type": "reviewer"},
+            # agent_type is empty (orchestrator caller, not a subagent)
+            "agent_type": "",
         }
         result = _run_block(data, self.session_dir)
         self.assertEqual(result, {})
