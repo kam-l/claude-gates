@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import traceback
+from typing import Optional
 
 DEPS_HASH_FILENAME = ".deps-hash"
 PACKAGES = ["mcp", "langfuse"]
@@ -83,13 +84,15 @@ def run_pip_install(plugin_data: str) -> bool:
     Run pip install --target <plugin_data>/pylib mcp langfuse.
 
     Returns True on success (exit code 0), False otherwise.
+    stdout is suppressed (DEVNULL) so pip progress lines do not corrupt the
+    hook's JSON stdout channel. stderr is inherited so errors are visible.
     """
     cmd = _build_pip_command(plugin_data)
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd, stdout=subprocess.DEVNULL)
     return result.returncode == 0
 
 
-def run_install(plugin_data: str | None, version: str) -> None:
+def run_install(plugin_data: Optional[str], version: str) -> None:
     """
     Orchestrate hash check + install.
 
@@ -115,7 +118,7 @@ def run_install(plugin_data: str | None, version: str) -> None:
         remove_cache(plugin_data)
 
 
-def read_version(plugin_root: str | None = None) -> str:
+def read_version(plugin_root: Optional[str] = None) -> str:
     """
     Read version from plugin.json.
 

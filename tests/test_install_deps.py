@@ -14,6 +14,7 @@ Edge cases:
 """
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -153,6 +154,25 @@ class TestPipInstallTarget(unittest.TestCase):
         mock_run.return_value = MagicMock(returncode=1)
         result = install_deps.run_pip_install(self.tmp)
         self.assertFalse(result)
+
+    @patch("subprocess.run")
+    def test_pip_stdout_suppressed(self, mock_run):
+        """Stdout must be suppressed so pip output doesn't corrupt hook JSON output."""
+        mock_run.return_value = MagicMock(returncode=0)
+        install_deps.run_pip_install(self.tmp)
+        _, kwargs = mock_run.call_args
+        # stdout must be redirected away from the hook process stdout
+        self.assertIn("stdout", kwargs)
+        self.assertNotEqual(kwargs["stdout"], None)  # None means inherit — not allowed
+
+    @patch("subprocess.run")
+    def test_pip_stdout_is_devnull_or_pipe(self, mock_run):
+        """Stdout must be DEVNULL or PIPE — never inherited (None)."""
+        mock_run.return_value = MagicMock(returncode=0)
+        install_deps.run_pip_install(self.tmp)
+        _, kwargs = mock_run.call_args
+        allowed = {subprocess.DEVNULL, subprocess.PIPE}
+        self.assertIn(kwargs.get("stdout"), allowed)
 
 
 class TestFailOpen(unittest.TestCase):
