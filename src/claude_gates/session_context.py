@@ -137,6 +137,12 @@ def on_session_start(data: dict) -> dict:
     Builds the banner, writes it to stderr, and returns additionalContext
     with the banner plus behavioral guidance for the orchestrator.
     """
+    if sys.version_info < (3, 11):
+        version_str = f"{sys.version_info.major}.{sys.version_info.minor}"
+        message = f"[ClaudeGates] Python 3.11+ required (found {version_str}). Gates disabled."
+        sys.stderr.write(message + "\n")
+        return {"systemMessage": message}
+
     try:
         gate_disabled = is_gate_disabled()
         banner = build_banner(gate_disabled)

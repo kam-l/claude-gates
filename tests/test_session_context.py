@@ -455,5 +455,99 @@ class TestOnSessionStart(unittest.TestCase):
         self.assertIsInstance(result, dict)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Task 30: Python version check in on_session_start()
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPythonVersionCheck(unittest.TestCase):
+    """AC1: Version check at top of on_session_start().
+
+    If sys.version_info < (3, 11):
+      - log warning to stderr
+      - return {"systemMessage": "[ClaudeGates] Python 3.11+ required (found X.Y). Gates disabled."}
+      - do NOT crash
+      - do NOT inject additionalContext / banner
+    """
+
+    def setUp(self):
+        from src.claude_gates import session_context
+        self.on_session_start = session_context.on_session_start
+
+    def test_old_python_logs_to_stderr(self):
+        """When version < 3.11, warning is written to stderr."""
+        import io
+        stderr_capture = io.StringIO()
+        old_version = (3, 10, 0, "final", 0)
+        with patch("sys.version_info", old_version), \
+             patch("sys.stderr", stderr_capture):
+            self.on_session_start({})
+        stderr_output = stderr_capture.getvalue()
+        self.assertIn("[ClaudeGates] Python 3.11+ required", stderr_output)
+        self.assertIn("3.10", stderr_output)
+        self.assertIn("Gates disabled", stderr_output)
+
+    def test_old_python_returns_system_message(self):
+        """When version < 3.11, returns systemMessage so user sees warning in-session."""
+        old_version = (3, 10, 0, "final", 0)
+        with patch("sys.version_info", old_version):
+            result = self.on_session_start({})
+        self.assertIn("systemMessage", result)
+        self.assertIn("[ClaudeGates] Python 3.11+ required", result["systemMessage"])
+        self.assertIn("3.10", result["systemMessage"])
+        self.assertIn("Gates disabled", result["systemMessage"])
+
+    def test_old_python_returns_empty_of_additional_context(self):
+        """When version < 3.11, no additionalContext is returned (fail-open, no banner)."""
+        old_version = (3, 10, 0, "final", 0)
+        with patch("sys.version_info", old_version):
+            result = self.on_session_start({})
+        self.assertNotIn("additionalContext", result)
+
+    def test_old_python_does_not_crash(self):
+        """When version < 3.11, on_session_start does NOT raise."""
+        old_version = (3, 10, 0, "final", 0)
+        with patch("sys.version_info", old_version):
+            try:
+                result = self.on_session_start({})
+            except Exception as e:
+                self.fail(f"on_session_start raised unexpectedly: {e}")
+        self.assertIsInstance(result, dict)
+
+    def test_python_311_exactly_passes(self):
+        """Python 3.11.0 exactly must pass the version check (>= 3.11)."""
+        version_311 = (3, 11, 0, "final", 0)
+        with patch("sys.version_info", version_311), \
+             patch("src.claude_gates.session_context.is_gate_disabled", return_value=False), \
+             patch("src.claude_gates.session_context.discover_gated_agents", return_value=[]):
+            result = self.on_session_start({})
+        self.assertIn("additionalContext", result)
+        self.assertNotIn("systemMessage", result)
+
+    def test_python_312_passes(self):
+        """Python 3.12 must pass (clearly >= 3.11)."""
+        version_312 = (3, 12, 0, "final", 0)
+        with patch("sys.version_info", version_312), \
+             patch("src.claude_gates.session_context.is_gate_disabled", return_value=False), \
+             patch("src.claude_gates.session_context.discover_gated_agents", return_value=[]):
+            result = self.on_session_start({})
+        self.assertIn("additionalContext", result)
+        self.assertNotIn("systemMessage", result)
+
+    def test_python_39_fails_with_correct_version_in_message(self):
+        """Python 3.9 — message contains '3.9'."""
+        old_version = (3, 9, 7, "final", 0)
+        with patch("sys.version_info", old_version):
+            result = self.on_session_start({})
+        self.assertIn("3.9", result["systemMessage"])
+
+    def test_old_python_no_banner_injection(self):
+        """When version < 3.11, build_banner is never called (no side effects)."""
+        old_version = (3, 10, 0, "final", 0)
+        with patch("sys.version_info", old_version), \
+             patch("src.claude_gates.session_context.build_banner") as mock_banner:
+            self.on_session_start({})
+        mock_banner.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
