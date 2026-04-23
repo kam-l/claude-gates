@@ -548,6 +548,41 @@ class TestPythonVersionCheck(unittest.TestCase):
             self.on_session_start({})
         mock_banner.assert_not_called()
 
+    def test_module_has_no_unconditional_311_imports(self):
+        """session_context.py must not import claude_gates.types or claude_gates.parser
+        at module level unconditionally — those modules use StrEnum (3.11+) and would
+        cause ImportError on Python 3.10 before on_session_start() is reached.
+
+        Verified via AST: any ImportFrom of claude_gates.types or claude_gates.parser
+        must be nested inside an If node (version guard), not at module top level.
+        """
+        import ast
+        import pathlib
+
+        src_path = pathlib.Path(_PROJECT_ROOT) / "src" / "claude_gates" / "session_context.py"
+        source = src_path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        # Collect all top-level ImportFrom nodes (direct children of module body)
+        unsafe_modules = {"claude_gates.types", "claude_gates.parser"}
+        top_level_imports = []
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.ImportFrom):
+                full_name = node.module or ""
+                if full_name in unsafe_modules:
+                    top_level_imports.append(full_name)
+
+        self.assertEqual(
+            top_level_imports,
+            [],
+            msg=(
+                f"Found unconditional top-level import(s) of 3.11+-only modules in "
+                f"session_context.py: {top_level_imports}. "
+                f"These must be guarded by 'if sys.version_info >= (3, 11):' so the "
+                f"module is importable on Python 3.10."
+            ),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

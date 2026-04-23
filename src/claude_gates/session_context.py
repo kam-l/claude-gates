@@ -13,9 +13,15 @@ import os
 import sys
 from typing import List, Optional
 
-from claude_gates import parser
-from claude_gates.session import is_gate_disabled
-from claude_gates.types import IAgentSummary, StepType, VerificationStep
+# Guard 3.11+-only imports: StrEnum (used in types.py and parser.py) is unavailable
+# on Python 3.10. This module must be importable on 3.10 so that the version check
+# in on_session_start() can fire and return a friendly error instead of crashing with
+# an unhandled ImportError. All functions below that reference these names are only
+# called after the version check passes.
+if sys.version_info >= (3, 11):
+    from claude_gates import parser
+    from claude_gates.session import is_gate_disabled
+    from claude_gates.types import IAgentSummary, StepType, VerificationStep
 
 HOME: str = os.environ.get("USERPROFILE") or os.environ.get("HOME") or ""
 PROJECT_ROOT: str = os.getcwd()
