@@ -347,6 +347,73 @@ class TestEnsureMcpConfig(unittest.TestCase):
             args_str = " ".join(str(a) for a in server.get("args", []))
             self.assertIn("McpServer.py", args_str)
 
+    # ── AC#1: sys.executable (not hardcoded "python3") ────────────────
+
+    def test_command_is_sys_executable(self):
+        """AC#1 - command field must equal sys.executable for venv compatibility."""
+        from src.claude_gates.verification import _ensure_mcp_config
+        with tempfile.TemporaryDirectory() as session_dir:
+            config_path = _ensure_mcp_config(session_dir)
+            with open(config_path, "r") as f:
+                cfg = json.load(f)
+            server = cfg["mcpServers"]["claude-gates"]
+            self.assertEqual(server["command"], sys.executable,
+                             "command must be sys.executable, not hardcoded 'python3'")
+
+    # ── AC#2: Plugin root path resolution ─────────────────────────────
+
+    def test_plugin_root_from_env_var(self):
+        """AC#2 - CLAUDE_PLUGIN_ROOT env var controls McpServer.py path when set."""
+        from src.claude_gates.verification import _ensure_mcp_config
+        with tempfile.TemporaryDirectory() as session_dir:
+            with tempfile.TemporaryDirectory() as fake_plugin_root:
+                with patch.dict(os.environ, {"CLAUDE_PLUGIN_ROOT": fake_plugin_root}):
+                    config_path = _ensure_mcp_config(session_dir)
+                with open(config_path, "r") as f:
+                    cfg = json.load(f)
+                server = cfg["mcpServers"]["claude-gates"]
+                args_str = " ".join(str(a) for a in server.get("args", []))
+                # Path must start with fake_plugin_root (forward-slash normalized)
+                expected_prefix = fake_plugin_root.replace("\\", "/")
+                self.assertTrue(
+                    args_str.startswith(expected_prefix),
+                    f"Expected path to start with {expected_prefix!r}, got {args_str!r}",
+                )
+
+    def test_plugin_root_fallback_when_env_unset(self):
+        """AC#2 - Falls back to project root when CLAUDE_PLUGIN_ROOT is not set."""
+        from src.claude_gates.verification import _ensure_mcp_config
+        with tempfile.TemporaryDirectory() as session_dir:
+            env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PLUGIN_ROOT"}
+            with patch.dict(os.environ, env, clear=True):
+                config_path = _ensure_mcp_config(session_dir)
+            with open(config_path, "r") as f:
+                cfg = json.load(f)
+            server = cfg["mcpServers"]["claude-gates"]
+            args_str = " ".join(str(a) for a in server.get("args", []))
+            self.assertIn("McpServer.py", args_str)
+
+    def test_forward_slash_normalization_on_paths(self):
+        """AC#2 - Paths in args must use forward slashes (Windows compat)."""
+        from src.claude_gates.verification import _ensure_mcp_config
+        with tempfile.TemporaryDirectory() as session_dir:
+            config_path = _ensure_mcp_config(session_dir)
+            with open(config_path, "r") as f:
+                cfg = json.load(f)
+            server = cfg["mcpServers"]["claude-gates"]
+            args = server.get("args", [])
+            for arg in args:
+                self.assertNotIn("\\", str(arg),
+                                 f"Path arg must use forward slashes: {arg!r}")
+
+    def test_return_path_uses_forward_slashes(self):
+        """AC#2 - Returned config path must use forward slashes."""
+        from src.claude_gates.verification import _ensure_mcp_config
+        with tempfile.TemporaryDirectory() as session_dir:
+            config_path = _ensure_mcp_config(session_dir)
+            self.assertNotIn("\\", config_path,
+                             f"Returned path must use forward slashes: {config_path!r}")
+
 
 # ── AC5: No sys.exit — all early exits return {} ─────────────────────
 
