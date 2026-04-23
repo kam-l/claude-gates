@@ -500,18 +500,50 @@ class TestPlanGate(unittest.TestCase):
         self.assertEqual(r["exit_code"], 0)
 
     def test_plan_gate_clear_exits_zero(self):
-        """PlanGateClear exits 0."""
+        """PlanGateClear exits 0 and clears the gater verdict from the DB."""
+        session_id = "plangate-clear-" + str(id(self))
+        short_id = session_id.replace("-", "")[:8]
+        session_dir = os.path.join(self.tmp_root, ".sessions", short_id)
+        os.makedirs(session_dir, exist_ok=True)
+
+        # Seed a gater PASS verdict so there is something to clear
+        conn = _make_db(session_dir)
+        conn.execute(
+            "INSERT OR REPLACE INTO agents (scope, agent, verdict) VALUES (?, ?, ?)",
+            ("_pending", "gater", "PASS"),
+        )
+        conn.commit()
+
+        # Verify it is present before the hook runs
+        row = conn.execute(
+            "SELECT 1 FROM agents WHERE agent = 'gater' AND verdict IS NOT NULL"
+        ).fetchone()
+        self.assertIsNotNone(row, "Pre-condition: gater verdict must exist before PlanGateClear")
+        conn.close()
+
         r = _run_hook("PlanGateClear.py", {
-            "session_id": "plangate-clear-" + str(id(self)),
+            "session_id": session_id,
             "tool_name": "ExitPlanMode",
             "tool_input": {},
         }, cwd=self.tmp_root)
         self.assertEqual(r["exit_code"], 0)
 
+        # Verify the verdict was actually cleared from the DB
+        conn2 = sqlite3.connect(os.path.join(session_dir, "session.db"))
+        row2 = conn2.execute(
+            "SELECT 1 FROM agents WHERE agent = 'gater' AND verdict IS NOT NULL"
+        ).fetchone()
+        conn2.close()
+        self.assertIsNone(row2, "PlanGateClear must delete the gater verdict from DB")
+
     def test_plan_gate_blocks_without_gater_verdict(self):
-        """PlanGate blocks (or allows) when no gater verdict in DB — fail-open."""
-        # Without a gater PASS in DB, should either allow (fail-open) or block
-        # depending on plan line count. The key invariant is exit 0.
+        """PlanGate fails open (allows) when no gater verdict and no plans dir exists.
+
+        PlanGate reads plan files from ~/.claude/plans/ — if that directory does
+        not exist, the hook returns {} (empty = allow) regardless of gater verdict
+        state. In the E2E test environment there is no plans dir, so the behavioral
+        assertion is: stdout must be empty (allow signal, not a block decision).
+        """
         session_id = "plangate-nopass-" + str(id(self))
         r = _run_hook("PlanGate.py", {
             "session_id": session_id,
@@ -519,6 +551,12 @@ class TestPlanGate(unittest.TestCase):
             "tool_input": {"plan": "Step 1\nStep 2\nStep 3"},
         }, cwd=self.tmp_root)
         self.assertEqual(r["exit_code"], 0)
+        # Behavioral assertion: fail-open means empty stdout (allow), not a block decision
+        stdout_json = json.loads(r["stdout"]) if r["stdout"] else {}
+        self.assertNotEqual(
+            stdout_json.get("decision"), "block",
+            "PlanGate must not block when no plans dir exists (fail-open invariant)",
+        )
 
     def test_plan_gate_allows_with_gater_pass_in_db(self):
         """PlanGate allows when gater has PASS verdict in DB."""
