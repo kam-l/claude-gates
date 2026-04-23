@@ -583,6 +583,84 @@ class TestPythonVersionCheck(unittest.TestCase):
             ),
         )
 
+    def test_311_imports_guarded_by_correct_version_condition(self):
+        """The If guard wrapping claude_gates.types/parser imports must test
+        sys.version_info >= (3, 11) exactly — not (3, 9), (4, 0), or any other tuple.
+
+        Validated via AST structural match:
+          Compare(
+            left=Attribute(value=Name(id='sys'), attr='version_info'),
+            ops=[GtE()],
+            comparators=[Tuple(elts=[Constant(3), Constant(11)])]
+          )
+        """
+        import ast
+        import pathlib
+
+        src_path = pathlib.Path(_PROJECT_ROOT) / "src" / "claude_gates" / "session_context.py"
+        source = src_path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        unsafe_modules = {"claude_gates.types", "claude_gates.parser"}
+
+        def _is_version_311_guard(if_test: ast.expr) -> bool:
+            """Return True iff if_test is sys.version_info >= (3, 11)."""
+            if not isinstance(if_test, ast.Compare):
+                return False
+            left = if_test.left
+            if not (isinstance(left, ast.Attribute) and left.attr == "version_info"):
+                return False
+            if not (isinstance(left.value, ast.Name) and left.value.id == "sys"):
+                return False
+            if len(if_test.ops) != 1 or not isinstance(if_test.ops[0], ast.GtE):
+                return False
+            if len(if_test.comparators) != 1:
+                return False
+            tup = if_test.comparators[0]
+            if not isinstance(tup, ast.Tuple) or len(tup.elts) != 2:
+                return False
+            major, minor = tup.elts
+            if not (isinstance(major, ast.Constant) and major.value == 3):
+                return False
+            if not (isinstance(minor, ast.Constant) and minor.value == 11):
+                return False
+            return True
+
+        # Find all If nodes at module top level that contain guarded imports
+        guarded_by_correct_condition = []
+        guarded_by_wrong_condition = []
+
+        for node in ast.iter_child_nodes(tree):
+            if not isinstance(node, ast.If):
+                continue
+            # Check whether this If body contains any of the unsafe imports
+            for body_node in ast.walk(node):
+                if isinstance(body_node, ast.ImportFrom):
+                    full_name = body_node.module or ""
+                    if full_name in unsafe_modules:
+                        if _is_version_311_guard(node.test):
+                            guarded_by_correct_condition.append(full_name)
+                        else:
+                            guarded_by_wrong_condition.append(full_name)
+                        break
+
+        self.assertEqual(
+            guarded_by_wrong_condition,
+            [],
+            msg=(
+                f"Import(s) {guarded_by_wrong_condition} are inside an If block but the "
+                f"condition is NOT 'sys.version_info >= (3, 11)'. "
+                f"The guard must use exactly (3, 11) to protect against Python 3.10."
+            ),
+        )
+        self.assertTrue(
+            len(guarded_by_correct_condition) > 0,
+            msg=(
+                "Expected at least one of claude_gates.types / claude_gates.parser to be "
+                "guarded by 'if sys.version_info >= (3, 11):' but none was found."
+            ),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
