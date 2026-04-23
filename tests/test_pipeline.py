@@ -4,9 +4,9 @@ Tests call PipelineRepository and PipelineEngine directly via conftest fixtures.
 No Database.ts / StateMachine.ts wrapper shims.
 
 ts_source_tests: 137
-pytest_count: 130
+pytest_count: 134
 delta_rationale:
-  -7 tests dropped (TS-specific, no Python equivalent):
+  -3 tests dropped (TS-specific, no Python equivalent):
     1. "getDb creates database" — Python uses conftest fixture; open_database() is
        tested in test_session.py; no standalone createDb test needed here.
     2. "getDb creates session dir if missing" — open_database() does NOT auto-mkdir;
@@ -15,15 +15,12 @@ delta_rationale:
     3-4. "trace writes audit.jsonl entry" / "trace silently fails on bad path"
        — Already fully covered in test_tracing.py (TestTrace class); duplicating
        them here would be redundant. Both counted as drops.
-    5. "step with unknown verdict warns and passes" — the TS test captures stderr
-       via process.stderr.write monkey-patch; Python test uses capsys (included).
-    6. "resolveRole: unscoped search across pipelines" — TS passes null as scope;
+    5. "resolveRole: unscoped search across pipelines" — TS passes null as scope;
        Python passes empty string ""; both variants included as one combined test.
-    7. "Parallel scopes with same agent name" — split into 2 focused tests for
+    6. "Parallel scopes with same agent name" — split into 2 focused tests for
        clarity (net 0 drop, +1 additional test for readability).
-  Net: 137 - 2 (trace, already in test_tracing.py) - 1 (getDb, replaced by
-       open_database variant) + 1 (get_session_dir variant) = ~135, then minor
-       structural adjustments bring final count to 130 distinct pytest functions.
+  Net: 137 - 2 (trace, already in test_tracing.py) - 1 (getDb, no replacement)
+       + 0 (get_session_dir counted in test_session.py) = 134 pytest functions.
   All functional scenarios from the 137 TS tests are covered.
 """
 from __future__ import annotations
@@ -138,10 +135,10 @@ def test_parse_verification_returns_none_for_no_verification_field():
 
 def test_parse_verification_returns_none_for_empty_verification():
     result = parser.parse_verification("---\nverification:\n---\n")
-    # Empty list or None — both acceptable; TS returns null for truly empty
-    # Python returns [] when key exists but list is empty
-    assert result is not None  # key exists
-    assert result == []  # empty list
+    # Python returns [] when the key exists but the list is empty.
+    # TS returns null here, but the Python implementation intentionally diverges —
+    # YAML parses an empty sequence as [] not None. This divergence is permanent.
+    assert result == []
 
 
 def test_parse_agent_name_with_hyphens_and_underscores():
@@ -237,7 +234,6 @@ def test_transform_step_source_completing_auto_advances(repo, engine):
     engine.create_pipeline("ts", "worker", [
         {"type": "TRANSFORM", "agent": "cleaner", "maxRounds": 1},
     ])
-    # Source agent completing a TRANSFORM step also auto-advances
     a = engine.step("ts", {"role": "source", "artifactVerdict": "PASS"})
     assert a["action"] == "done"
 
@@ -271,7 +267,7 @@ def test_insert_step_and_get_step(repo):
     assert step is not None
     assert step["step_type"] == "CHECK"
     assert step["prompt"] == "Check."
-    assert step["status"] == "active"  # first step
+    assert step["status"] == "active"
 
 
 def test_insert_step_stores_transform_columns_for_slash_command(repo):
@@ -409,7 +405,7 @@ def test_step_revise_on_verify_returns_source_action(repo, engine):
     engine.step("s1", "PASS")  # advance to VERIFY
     a = engine.step("s1", "REVISE")
     assert a["action"] == "source"
-    assert a["agent"] == "worker"  # routes to source, not fixer
+    assert a["agent"] == "worker"
 
 
 def test_step_revise_on_verify_w_fixer_returns_fixer_action(repo, engine):
@@ -418,7 +414,7 @@ def test_step_revise_on_verify_w_fixer_returns_fixer_action(repo, engine):
     ])
     a = engine.step("s1", "REVISE")
     assert a["action"] == "source"
-    assert a["agent"] == "patcher"  # routes to fixer
+    assert a["agent"] == "patcher"
 
 
 def test_step_fail_treated_same_as_revise(repo, engine):
@@ -481,18 +477,16 @@ def test_step_fixer_role_reactivates_fix_step(repo, engine):
     engine.step("s1", "REVISE")  # → fix
     a = engine.step("s1", {"role": "fixer", "artifactVerdict": "PASS"})
     assert a["action"] == "spawn"
-    assert a["agent"] == "reviewer"  # reviewer re-runs, not fixer
+    assert a["agent"] == "reviewer"
 
 
 def test_step_source_role_does_not_advance_verify_step(repo, engine):
     engine.create_pipeline("s1", "worker", [
         {"type": "VERIFY", "agent": "reviewer", "maxRounds": 3},
     ])
-    # Source completes with PASS — should NOT advance the VERIFY step
     a = engine.step("s1", {"role": "source", "artifactVerdict": "PASS"})
     assert a["action"] == "spawn"
-    assert a["agent"] == "reviewer"  # reviewer should still be expected
-    # Step should still be active, not passed
+    assert a["agent"] == "reviewer"
     active = repo.get_active_step("s1")
     assert active is not None
     assert active["status"] == "active"
@@ -519,7 +513,7 @@ def test_retry_gate_agent_increments_round_and_re_runs(repo, engine):
     a = engine.retry_gate_agent("s1")
     assert a["action"] == "spawn"
     assert a["agent"] == "reviewer"
-    assert a["round"] == 1  # round incremented from 0
+    assert a["round"] == 1
 
 
 def test_retry_gate_agent_exhaustion_after_max_rounds(repo, engine):
@@ -528,7 +522,7 @@ def test_retry_gate_agent_exhaustion_after_max_rounds(repo, engine):
     ])
     # First retry → round 1 (1 > 1 = false, retry)
     a = engine.retry_gate_agent("s1")
-    assert a["action"] == "spawn"  # retried
+    assert a["action"] == "spawn"
     # Second retry → round 2 (2 > 1 = true, exhausted)
     a = engine.retry_gate_agent("s1")
     assert a["action"] == "failed"
@@ -779,6 +773,8 @@ def test_parallel_scopes_role_resolution_during_revision(repo, engine):
     ])
     engine.step("auth", "REVISE")
 
+    assert repo.get_pipeline_state("auth")["status"] == "revision"
+
     # After REVISE, step is in "revise" status — reviewer is no longer active
     role_auth = engine.resolve_role("auth", "reviewer")
     assert role_auth == "ungated", "reviewer ungated during revision (source's turn)"
@@ -907,7 +903,7 @@ def test_step_enforcement_source_action_returns_fixer_during_fix(repo, engine):
     scope_action = next((a for a in actions if a["scope"] == "s1"), None)
     assert scope_action is not None
     assert scope_action["action"] == "source"
-    assert scope_action["agent"] == "patcher"  # fixer, not source_agent
+    assert scope_action["agent"] == "patcher"
 
 
 def test_no_pipeline_for_scope_allows_agent_spawn(repo, engine):
@@ -1032,7 +1028,7 @@ def test_fixer_step_fixer_role_reactivates_step(repo, engine):
 
     a = engine.step("s1", {"role": "fixer", "artifactVerdict": "PASS"})
     assert a["action"] == "spawn"
-    assert a["agent"] == "reviewer"  # reviewer re-runs
+    assert a["agent"] == "reviewer"
 
 
 def test_gate_agent_pass_advances_to_next_step(repo, engine):
@@ -1054,7 +1050,7 @@ def test_retry_gate_agent_round_increment_step_stays_active(repo, engine):
     a = engine.retry_gate_agent("s1")
     assert a["action"] == "spawn"
     assert a["agent"] == "reviewer"
-    assert a["round"] == 1  # round incremented
+    assert a["round"] == 1
     active = repo.get_active_step("s1")
     assert active is not None
     assert active["status"] == "active"
@@ -1070,7 +1066,7 @@ def test_retry_gate_agent_exhaustion_with_max_rounds_0(repo, engine):
     assert repo.get_pipeline_state("s1")["status"] == "failed"
 
 
-def test_agent_crud_register_and_retrieve(repo, engine):
+def test_agent_crud_register_and_retrieve(repo):
     repo.register_agent("s1", "worker", "/path/to/artifact.md")
     agent = repo.get_agent("s1", "worker")
     assert agent is not None
@@ -1079,7 +1075,7 @@ def test_agent_crud_register_and_retrieve(repo, engine):
     assert agent["verdict"] is None
 
 
-def test_agent_crud_set_verdict_and_retrieve(repo, engine):
+def test_agent_crud_set_verdict_and_retrieve(repo):
     repo.register_agent("s1", "worker", "/path.md")
     repo.set_verdict("s1", "worker", "PASS", 1)
     agent = repo.get_agent("s1", "worker")
