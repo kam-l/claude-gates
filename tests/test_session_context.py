@@ -633,7 +633,8 @@ class TestPythonVersionCheck(unittest.TestCase):
         for node in ast.iter_child_nodes(tree):
             if not isinstance(node, ast.If):
                 continue
-            # Check whether this If body contains any of the unsafe imports
+            # Check whether this If body contains any of the unsafe imports.
+            # No break: collect ALL matching imports so all three are validated.
             for body_node in ast.walk(node):
                 if isinstance(body_node, ast.ImportFrom):
                     full_name = body_node.module or ""
@@ -642,7 +643,6 @@ class TestPythonVersionCheck(unittest.TestCase):
                             guarded_by_correct_condition.append(full_name)
                         else:
                             guarded_by_wrong_condition.append(full_name)
-                        break
 
         self.assertEqual(
             guarded_by_wrong_condition,
@@ -653,11 +653,15 @@ class TestPythonVersionCheck(unittest.TestCase):
                 f"The guard must use exactly (3, 11) to protect against Python 3.10."
             ),
         )
-        self.assertTrue(
-            len(guarded_by_correct_condition) > 0,
+        # All unsafe_modules must appear in the correct guard — not just one.
+        missing = unsafe_modules - set(guarded_by_correct_condition)
+        self.assertEqual(
+            missing,
+            set(),
             msg=(
-                "Expected at least one of claude_gates.types / claude_gates.parser to be "
-                "guarded by 'if sys.version_info >= (3, 11):' but none was found."
+                f"Expected ALL of {unsafe_modules} to be guarded by "
+                f"'if sys.version_info >= (3, 11):' but these were missing: {missing}. "
+                f"Found guarded: {guarded_by_correct_condition}."
             ),
         )
 
