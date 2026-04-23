@@ -20,6 +20,7 @@ from typing import List, Optional
 # called after the version check passes.
 if sys.version_info >= (3, 11):
     from claude_gates import parser
+    # is_gate_disabled uses only stdlib but is guarded here for cohesion; safe to move out if needed
     from claude_gates.session import is_gate_disabled
     from claude_gates.types import IAgentSummary, StepType, VerificationStep
 
