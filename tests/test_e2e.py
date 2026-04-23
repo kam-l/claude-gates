@@ -48,7 +48,18 @@ def _run_hook(script_name: str, stdin_data: dict, cwd: str = None, env: dict = N
     """Run a hook script with JSON stdin; return {stdout, stderr, exit_code}."""
     import subprocess
     script_path = os.path.join(_PROJECT_ROOT, "scripts", script_name)
-    merged_env = {**os.environ, "CLAUDECODE": ""}
+    # Set CLAUDE_PLUGIN_ROOT so _setup_sys_path() resolves the src/ package dir,
+    # and PYTHONPATH so the initial `from claude_gates.hook_runner import run`
+    # import succeeds before _setup_sys_path() is ever called.
+    src_dir = os.path.join(_PROJECT_ROOT, "src")
+    existing_pypath = os.environ.get("PYTHONPATH", "")
+    new_pypath = (src_dir + os.pathsep + existing_pypath).rstrip(os.pathsep)
+    merged_env = {
+        **os.environ,
+        "CLAUDECODE": "",
+        "CLAUDE_PLUGIN_ROOT": _PROJECT_ROOT,
+        "PYTHONPATH": new_pypath,
+    }
     if env:
         merged_env.update(env)
     result = subprocess.run(
@@ -60,8 +71,14 @@ def _run_hook(script_name: str, stdin_data: dict, cwd: str = None, env: dict = N
         cwd=cwd or _PROJECT_ROOT,
         env=merged_env,
     )
+    # Normalise allow signal: hook_runner always writes at least "{}".
+    # Per spec: "Empty stdout from hook — parse as {} (valid allow response)".
+    # Treat bare "{}" as empty so tests can assert stdout == "" for allow.
+    raw_stdout = result.stdout.strip()
+    if raw_stdout == "{}":
+        raw_stdout = ""
     return {
-        "stdout": result.stdout.strip(),
+        "stdout": raw_stdout,
         "stderr": result.stderr,
         "exit_code": result.returncode,
     }
@@ -536,26 +553,36 @@ class TestPlanGate(unittest.TestCase):
         conn2.close()
         self.assertIsNone(row2, "PlanGateClear must delete the gater verdict from DB")
 
-    def test_plan_gate_blocks_without_gater_verdict(self):
-        """PlanGate fails open (allows) when no gater verdict and no plans dir exists.
+    def test_plan_gate_fails_open_without_verdict(self):
+        """PlanGate fails open (returns empty stdout = allow) when no plans dir exists.
 
         PlanGate reads plan files from ~/.claude/plans/ — if that directory does
-        not exist, the hook returns {} (empty = allow) regardless of gater verdict
-        state. In the E2E test environment there is no plans dir, so the behavioral
-        assertion is: stdout must be empty (allow signal, not a block decision).
+        not exist, the hook returns {} (empty stdout = allow) regardless of gater
+        verdict state.  The correct behavioral assertion is: stdout is empty and
+        the exit code is 0.  An empty stdout is the allow signal; a crash or
+        block would both be wrong here.
+
+        Override USERPROFILE/HOME to the temp root so no real ~/.claude/plans/
+        directory is visible, giving a hermetic "no plans dir" environment.
         """
         session_id = "plangate-nopass-" + str(id(self))
-        r = _run_hook("PlanGate.py", {
-            "session_id": session_id,
-            "tool_name": "ExitPlanMode",
-            "tool_input": {"plan": "Step 1\nStep 2\nStep 3"},
-        }, cwd=self.tmp_root)
+        r = _run_hook(
+            "PlanGate.py",
+            {
+                "session_id": session_id,
+                "tool_name": "ExitPlanMode",
+                "tool_input": {"plan": "Step 1\nStep 2\nStep 3"},
+            },
+            cwd=self.tmp_root,
+            # Point USERPROFILE + HOME at the temp root — no .claude/plans/ exists there
+            env={"USERPROFILE": self.tmp_root, "HOME": self.tmp_root},
+        )
+        # Behavioral assertion: fail-open means exit 0 + empty stdout (allow contract)
         self.assertEqual(r["exit_code"], 0)
-        # Behavioral assertion: fail-open means empty stdout (allow), not a block decision
-        stdout_json = json.loads(r["stdout"]) if r["stdout"] else {}
-        self.assertNotEqual(
-            stdout_json.get("decision"), "block",
-            "PlanGate must not block when no plans dir exists (fail-open invariant)",
+        self.assertEqual(
+            r["stdout"],
+            "",
+            "PlanGate must return empty stdout (allow) when no plans dir exists",
         )
 
     def test_plan_gate_allows_with_gater_pass_in_db(self):
@@ -582,6 +609,90 @@ class TestPlanGate(unittest.TestCase):
         self.assertEqual(r["exit_code"], 0)
         # With gater PASS, hook should allow (empty stdout)
         self.assertEqual(r["stdout"], "")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PlanGateClear — dedicated edge-case coverage
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestPlanGateClear(unittest.TestCase):
+    """PlanGateClear: dedicated edge-case coverage (missing DB, empty verdict, clear)."""
+
+    def setUp(self):
+        self.tmp_root = tempfile.mkdtemp(prefix="plangate-clear-e2e-")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp_root, ignore_errors=True)
+
+    def test_exits_zero_when_no_sessions_dir(self):
+        """PlanGateClear exits 0 (fail-open) when no .sessions dir exists at all."""
+        session_id = "pgclear-nodir-" + str(id(self))
+        r = _run_hook("PlanGateClear.py", {
+            "session_id": session_id,
+            "tool_name": "ExitPlanMode",
+            "tool_input": {},
+        }, cwd=self.tmp_root)
+        self.assertEqual(r["exit_code"], 0)
+        self.assertEqual(r["stdout"], "")
+
+    def test_exits_zero_when_verdict_table_is_empty(self):
+        """PlanGateClear exits 0 and is a no-op when agents table has no gater row."""
+        session_id = "pgclear-empty-" + str(id(self))
+        short_id = session_id.replace("-", "")[:8]
+        session_dir = os.path.join(self.tmp_root, ".sessions", short_id)
+        os.makedirs(session_dir, exist_ok=True)
+
+        # Initialise schema but insert NO gater verdict
+        conn = _make_db(session_dir)
+        conn.close()
+
+        r = _run_hook("PlanGateClear.py", {
+            "session_id": session_id,
+            "tool_name": "ExitPlanMode",
+            "tool_input": {},
+        }, cwd=self.tmp_root)
+        self.assertEqual(r["exit_code"], 0)
+        self.assertEqual(r["stdout"], "")
+
+    def test_clears_gater_verdict_from_db(self):
+        """PlanGateClear deletes only the gater verdict row, not other agents."""
+        session_id = "pgclear-del-" + str(id(self))
+        short_id = session_id.replace("-", "")[:8]
+        session_dir = os.path.join(self.tmp_root, ".sessions", short_id)
+        os.makedirs(session_dir, exist_ok=True)
+
+        # Seed: gater PASS verdict + an unrelated agent row
+        conn = _make_db(session_dir)
+        conn.execute(
+            "INSERT OR REPLACE INTO agents (scope, agent, verdict) VALUES (?, ?, ?)",
+            ("_pending", "gater", "PASS"),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO agents (scope, agent, verdict) VALUES (?, ?, ?)",
+            ("test-scope", "reviewer", "PASS"),
+        )
+        conn.commit()
+        conn.close()
+
+        r = _run_hook("PlanGateClear.py", {
+            "session_id": session_id,
+            "tool_name": "ExitPlanMode",
+            "tool_input": {},
+        }, cwd=self.tmp_root)
+        self.assertEqual(r["exit_code"], 0)
+
+        # Gater verdict must be gone; reviewer row must survive
+        conn2 = sqlite3.connect(os.path.join(session_dir, "session.db"))
+        gater_row = conn2.execute(
+            "SELECT 1 FROM agents WHERE agent = 'gater' AND verdict IS NOT NULL"
+        ).fetchone()
+        reviewer_row = conn2.execute(
+            "SELECT 1 FROM agents WHERE agent = 'reviewer'"
+        ).fetchone()
+        conn2.close()
+        self.assertIsNone(gater_row, "PlanGateClear must delete the gater verdict")
+        self.assertIsNotNone(reviewer_row, "PlanGateClear must not delete other agent rows")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
