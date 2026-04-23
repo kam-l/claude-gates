@@ -16,6 +16,7 @@ AC2 production path:
               → SystemExit(1) propagates through WebServer.py → process exits 1
 The test mocks main() to call sys.exit(1) (matching the real production path).
 """
+import contextlib
 import io
 import os
 import sys
@@ -76,23 +77,19 @@ def _exec_script(env=None, extra_sys_modules=None, main_side_effect=None):
     if extra_sys_modules:
         default_modules.update(extra_sys_modules)
 
-    import contextlib
-    try:
-        with contextlib.ExitStack() as stack:
-            stack.enter_context(patch("sys.stderr", fake_stderr))
-            stack.enter_context(patch("sys.exit", side_effect=fake_exit))
-            stack.enter_context(patch.dict("os.environ", exec_env, clear=True))
-            stack.enter_context(patch.dict("sys.modules", default_modules))
-            try:
-                # __name__ = "__main__" so the if __name__ == "__main__" guard fires
-                exec(
-                    compile(source, _SCRIPT_PATH, "exec"),
-                    {"__file__": _SCRIPT_PATH, "__name__": "__main__"},
-                )
-            except SystemExit:
-                pass
-    finally:
-        pass
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch("sys.stderr", fake_stderr))
+        stack.enter_context(patch("sys.exit", side_effect=fake_exit))
+        stack.enter_context(patch.dict("os.environ", exec_env, clear=True))
+        stack.enter_context(patch.dict("sys.modules", default_modules))
+        try:
+            # __name__ = "__main__" so the if __name__ == "__main__" guard fires
+            exec(
+                compile(source, _SCRIPT_PATH, "exec"),
+                {"__file__": _SCRIPT_PATH, "__name__": "__main__"},
+            )
+        except SystemExit:
+            pass
 
     path_snapshot = list(sys.path)
     sys.path[:] = orig_path
@@ -195,9 +192,9 @@ class TestWebServerCallsMain(unittest.TestCase):
         _, _, _, call_log = _exec_script(env={"CLAUDE_PLUGIN_ROOT": _PROJECT_ROOT})
         self.assertEqual(len(call_log), 1)
 
-    def test_main_called_exactly_once(self):
-        """main() is called exactly once per script execution."""
-        _, _, _, call_log = _exec_script(env={"CLAUDE_PLUGIN_ROOT": _PROJECT_ROOT})
+    def test_main_called_when_plugin_root_unset(self):
+        """main() is still called when CLAUDE_PLUGIN_ROOT is absent (fallback path)."""
+        _, _, _, call_log = _exec_script(env={})
         self.assertEqual(len(call_log), 1)
 
     def test_no_exit_on_success(self):

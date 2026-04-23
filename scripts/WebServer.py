@@ -27,7 +27,8 @@ def _setup_sys_path():
             sys.path.insert(0, pylib_path)
 
 
+_setup_sys_path()
+
 if __name__ == "__main__":
-    _setup_sys_path()
     from claude_gates.web_server import main
     main()
