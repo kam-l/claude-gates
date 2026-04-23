@@ -197,7 +197,7 @@ class TestCleanup(unittest.TestCase):
         os.makedirs(sessions_dir, exist_ok=True)
         old_dir = self._make_session_dir(sessions_dir, "oldabc12", age_days=10)
         self.assertTrue(os.path.exists(old_dir))
-        session.cleanup()
+        session.cleanup({})
         self.assertFalse(os.path.exists(old_dir))
 
     def test_keeps_recent_session_dirs(self):
@@ -205,12 +205,12 @@ class TestCleanup(unittest.TestCase):
         os.makedirs(sessions_dir, exist_ok=True)
         recent_dir = self._make_session_dir(sessions_dir, "recentab", age_days=1)
         self.assertTrue(os.path.exists(recent_dir))
-        session.cleanup()
+        session.cleanup({})
         self.assertTrue(os.path.exists(recent_dir))
 
     def test_missing_sessions_dir_no_error(self):
         try:
-            session.cleanup()
+            session.cleanup({})
         except Exception as e:
             self.fail(f"cleanup() raised on missing .sessions/: {e}")
 
@@ -232,7 +232,7 @@ class TestCleanup(unittest.TestCase):
 
         with patch("shutil.rmtree", side_effect=failing_rmtree):
             try:
-                session.cleanup()
+                session.cleanup({})
             except Exception as e:
                 self.fail(f"cleanup() raised despite best-effort: {e}")
 
@@ -245,7 +245,7 @@ class TestCleanup(unittest.TestCase):
         os.makedirs(no_db_dir, exist_ok=True)
         past_time = time.time() - 10 * 86400
         os.utime(no_db_dir, (past_time, past_time))
-        session.cleanup()
+        session.cleanup({})
         self.assertTrue(os.path.exists(no_db_dir))
 
     def test_scans_both_cwd_sessions_and_legacy(self):
@@ -262,7 +262,7 @@ class TestCleanup(unittest.TestCase):
 
         try:
             with patch.dict(os.environ, home_env):
-                session.cleanup()
+                session.cleanup({})
             self.assertFalse(os.path.exists(old_cwd), "CWD old dir should be removed")
             self.assertFalse(os.path.exists(old_legacy), "Legacy old dir should be removed")
         finally:

@@ -54,7 +54,7 @@ def set_gate_disabled(disabled: bool) -> None:
             pass
 
 
-def cleanup() -> None:
+def cleanup(data: dict) -> None:  # noqa: ARG001
     home = os.environ.get("USERPROFILE") or os.environ.get("HOME") or ""
     sessions_dirs = [
         os.path.join(os.getcwd(), ".sessions"),

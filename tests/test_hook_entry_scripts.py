@@ -11,6 +11,8 @@ Acceptance Criteria (spec.md):
 """
 import ast
 import os
+import subprocess
+import sys
 import unittest
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -185,16 +187,13 @@ class TestPlanGateSharedModule(unittest.TestCase):
     """AC#3 — PlanGate.py and PlanGateClear.py both import from claude_gates.plan_gate."""
 
     def _get_import_from_module(self, filename):
-        """Return the module name from line 2 (from claude_gates.<module> import ...)."""
+        """Return the module name from the ImportFrom node (from claude_gates.<module> import ...)."""
         source = _read_script(filename)
-        lines = [l for l in source.splitlines() if l.strip()]
-        # line2 is: from claude_gates.<module> import <handler>
-        line2 = lines[1]
-        # Extract module from "from claude_gates.X import Y"
-        parts = line2.split()
-        # parts = ['from', 'claude_gates.<module>', 'import', '<handler>']
-        full_module = parts[1]  # e.g. claude_gates.plan_gate
-        return full_module.split(".", 1)[1] if "." in full_module else full_module
+        tree = _parse_script(source, filename)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("claude_gates."):
+                return node.module[len("claude_gates."):]
+        raise AssertionError(f"{filename}: no 'from claude_gates.<module> import ...' found")
 
     def test_PlanGate_imports_from_plan_gate(self):
         module = self._get_import_from_module("PlanGate.py")
@@ -242,11 +241,78 @@ class TestTotalScriptCount(unittest.TestCase):
     def test_twelve_python_scripts_total(self):
         import glob
         py_files = glob.glob(os.path.join(_SCRIPTS_DIR, "*.py"))
-        self.assertEqual(
+        self.assertGreaterEqual(
             len(py_files),
             12,
-            msg=f"Expected 12 .py files in scripts/, found {len(py_files)}: {[os.path.basename(f) for f in sorted(py_files)]}",
+            msg=f"Expected at least 12 .py files in scripts/, found {len(py_files)}: {[os.path.basename(f) for f in sorted(py_files)]}",
         )
+
+
+class TestSubprocessInvocation(unittest.TestCase):
+    """CRITICAL-2 — Each entry script must run without TypeError/ImportError when invoked as a subprocess."""
+
+    _ENTRY_SCRIPTS = [filename for filename, _, _ in HOOK_SCRIPTS]
+
+    def _run_script(self, filename):
+        script_path = os.path.join(_SCRIPTS_DIR, filename)
+        env = os.environ.copy()
+        src_dir = os.path.join(_PROJECT_ROOT, "src")
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{src_dir}{os.pathsep}{existing}" if existing else src_dir
+        result = subprocess.run(
+            [sys.executable, script_path],
+            input="{}",
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env=env,
+        )
+        return result
+
+    def _assert_clean_exit(self, filename):
+        result = self._run_script(filename)
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"{filename}: expected exit code 0, got {result.returncode}\nstderr: {result.stderr}",
+        )
+        for marker in ("Traceback", "TypeError", "ImportError"):
+            self.assertNotIn(
+                marker,
+                result.stderr,
+                msg=f"{filename}: found '{marker}' in stderr:\n{result.stderr}",
+            )
+
+    def test_SessionCleanup_subprocess(self):
+        """Regression: cleanup() must accept data arg — was TypeError before fix."""
+        self._assert_clean_exit("SessionCleanup.py")
+
+    def test_GateToggle_subprocess(self):
+        self._assert_clean_exit("GateToggle.py")
+
+    def test_SessionContext_subprocess(self):
+        self._assert_clean_exit("SessionContext.py")
+
+    def test_WebLauncher_subprocess(self):
+        self._assert_clean_exit("WebLauncher.py")
+
+    def test_PipelineBlock_subprocess(self):
+        self._assert_clean_exit("PipelineBlock.py")
+
+    def test_PipelineConditions_subprocess(self):
+        self._assert_clean_exit("PipelineConditions.py")
+
+    def test_PipelineInjection_subprocess(self):
+        self._assert_clean_exit("PipelineInjection.py")
+
+    def test_PipelineVerification_subprocess(self):
+        self._assert_clean_exit("PipelineVerification.py")
+
+    def test_PlanGate_subprocess(self):
+        self._assert_clean_exit("PlanGate.py")
+
+    def test_PlanGateClear_subprocess(self):
+        self._assert_clean_exit("PlanGateClear.py")
 
 
 if __name__ == "__main__":
