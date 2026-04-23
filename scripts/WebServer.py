@@ -2,7 +2,8 @@
 Direct entry script for the claude-gates web server.
 
 NOT a hook — no stdin/stdout JSON protocol, no exit 0 guarantee.
-Long-running process. Exit 1 on fatal startup error.
+Long-running process. Exit 1 on fatal startup error (e.g., port in use).
+web_server.main() calls sys.exit(1) directly on OSError.
 """
 import os
 import sys
@@ -26,11 +27,7 @@ def _setup_sys_path():
             sys.path.insert(0, pylib_path)
 
 
-_setup_sys_path()
-
-try:
+if __name__ == "__main__":
+    _setup_sys_path()
     from claude_gates.web_server import main
     main()
-except OSError as e:
-    print("[ClaudeGates] Web server failed to start: {}".format(e), file=sys.stderr)
-    sys.exit(1)

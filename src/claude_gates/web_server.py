@@ -581,7 +581,7 @@ def main() -> None:
             "[ClaudeGates] Port {} in use or bind failed: {}".format(PORT, e),
             file=sys.stderr,
         )
-        return
+        sys.exit(1)
 
     print("[ClaudeGates] Web UI: http://localhost:{}".format(PORT), file=sys.stderr)
     try:
