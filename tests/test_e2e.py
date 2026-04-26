@@ -5,8 +5,11 @@ Tests exercise hook scripts via subprocess.run() with JSON stdin/stdout,
 validating the full hook protocol end-to-end.
 
 ts_source_tests: 28
-pytest_count: 28
-delta: 0 — 1:1 port; all 28 TS tests ported directly.
+pytest_count: 46
+delta: +18 — TestPlanGateClear adds 3 new behavioural tests (not in TS source);
+  the remaining +15 come from splitting compound TS tests into focused pytest
+  methods (one assertion group per method) and expanding edge-case coverage for
+  conditions, injection, verification, and full-pipeline-flow test classes.
 
 Subprocess-mock escalation note:
   The TS `block: skips blocking when agent-running marker exists` test uses
@@ -28,9 +31,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -46,7 +52,6 @@ from src.claude_gates.repository import PipelineRepository
 
 def _run_hook(script_name: str, stdin_data: dict, cwd: str = None, env: dict = None) -> dict:
     """Run a hook script with JSON stdin; return {stdout, stderr, exit_code}."""
-    import subprocess
     script_path = os.path.join(_PROJECT_ROOT, "scripts", script_name)
     # Set CLAUDE_PLUGIN_ROOT so _setup_sys_path() resolves the src/ package dir,
     # and PYTHONPATH so the initial `from claude_gates.hook_runner import run`
@@ -131,7 +136,7 @@ def _make_temp_root():
             "Conditional agent.\n"
         )
 
-    session_id = "e2e-test-" + str(int(__import__("time").time() * 1000))
+    session_id = "e2e-test-" + str(int(time.time() * 1000))
     return tmp_root, agents_dir, session_id
 
 
@@ -149,6 +154,13 @@ def _make_db(db_dir: str) -> sqlite3.Connection:
 def _make_engine(conn: sqlite3.Connection):
     repo = PipelineRepository(conn)
     return PipelineEngine(repo), repo
+
+
+def _make_conn(prefix: str = "e2e-"):
+    """Create a temp directory with an initialised session DB. Returns (conn, tmp_dir)."""
+    tmp = tempfile.mkdtemp(prefix=prefix)
+    conn = _make_db(tmp)
+    return conn, tmp
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -189,7 +201,6 @@ class TestSubprocessInvocationPattern(unittest.TestCase):
                 parsed = json.loads(r["stdout"])
                 self.assertIsInstance(parsed, dict)
         finally:
-            import shutil
             shutil.rmtree(tmp_root, ignore_errors=True)
 
 
@@ -204,7 +215,6 @@ class TestGateToggle(unittest.TestCase):
         self.tmp_root = tempfile.mkdtemp(prefix="gate-toggle-e2e-")
 
     def tearDown(self):
-        import shutil
         shutil.rmtree(self.tmp_root, ignore_errors=True)
 
     def test_gate_status_exits_zero(self):
@@ -264,7 +274,6 @@ class TestPipelineConditions(unittest.TestCase):
         self.tmp_root, self.agents_dir, self.session_id = _make_temp_root()
 
     def tearDown(self):
-        import shutil
         shutil.rmtree(self.tmp_root, ignore_errors=True)
 
     def test_allow_agent_with_scope(self):
@@ -329,7 +338,6 @@ class TestPipelineBlock(unittest.TestCase):
         self.tmp_root, _, self.session_id = _make_temp_root()
 
     def tearDown(self):
-        import shutil
         shutil.rmtree(self.tmp_root, ignore_errors=True)
 
     def test_allows_when_no_active_pipelines(self):
@@ -417,7 +425,6 @@ class TestPipelineInjection(unittest.TestCase):
         self.tmp_root, _, self.session_id = _make_temp_root()
 
     def tearDown(self):
-        import shutil
         shutil.rmtree(self.tmp_root, ignore_errors=True)
 
     def test_source_agent_gets_no_injection_on_first_run(self):
@@ -459,7 +466,6 @@ class TestPipelineVerification(unittest.TestCase):
         self.tmp_root, _, self.session_id = _make_temp_root()
 
     def tearDown(self):
-        import shutil
         shutil.rmtree(self.tmp_root, ignore_errors=True)
 
     def test_gater_exits_cleanly(self):
@@ -504,7 +510,6 @@ class TestPlanGate(unittest.TestCase):
         self.tmp_root = tempfile.mkdtemp(prefix="plangate-e2e-")
 
     def tearDown(self):
-        import shutil
         shutil.rmtree(self.tmp_root, ignore_errors=True)
 
     def test_plan_gate_exits_zero(self):
@@ -529,7 +534,6 @@ class TestPlanGate(unittest.TestCase):
             "INSERT OR REPLACE INTO agents (scope, agent, verdict) VALUES (?, ?, ?)",
             ("_pending", "gater", "PASS"),
         )
-        conn.commit()
 
         # Verify it is present before the hook runs
         row = conn.execute(
@@ -598,7 +602,6 @@ class TestPlanGate(unittest.TestCase):
             "INSERT OR REPLACE INTO agents (scope, agent, verdict) VALUES (?, ?, ?)",
             ("_pending", "gater", "PASS"),
         )
-        conn.commit()
         conn.close()
 
         r = _run_hook("PlanGate.py", {
@@ -622,7 +625,6 @@ class TestPlanGateClear(unittest.TestCase):
         self.tmp_root = tempfile.mkdtemp(prefix="plangate-clear-e2e-")
 
     def tearDown(self):
-        import shutil
         shutil.rmtree(self.tmp_root, ignore_errors=True)
 
     def test_exits_zero_when_no_sessions_dir(self):
@@ -702,28 +704,23 @@ class TestPlanGateClear(unittest.TestCase):
 class TestFullPipelineFlow(unittest.TestCase):
     """AC#3: Full pipeline lifecycle — spawn → check → verify → done."""
 
-    def _make_conn(self):
-        tmp = tempfile.mkdtemp(prefix="flow-e2e-")
-        conn = _make_db(tmp)
-        return conn, tmp
-
     def test_parse_agent_create_pipeline_step_through(self):
         """full flow: parse agent → create pipeline → step through."""
-        agents_dir = os.path.join(_PROJECT_ROOT, ".claude", "agents")
-        agent_md_path = os.path.join(agents_dir, "gt-worker.md")
-        with open(agent_md_path, "r", encoding="utf-8") as f:
+        # Use e2e-builder.md from temp fixture (matches TS source: reads e2e-builder.md,
+        # asserts VERIFY — two-element tuple [e2e-reviewer, 3] → IVerifyStep).
+        tmp_root, agents_dir, _ = _make_temp_root()
+        with open(os.path.join(agents_dir, "e2e-builder.md"), "r", encoding="utf-8") as f:
             agent_md = f.read()
 
         steps = parse_verification(agent_md)
         self.assertIsNotNone(steps)
         self.assertEqual(len(steps), 2)
         self.assertEqual(steps[0]["type"], "CHECK")
-        self.assertEqual(steps[1]["type"], "VERIFY_W_FIXER")
-        self.assertEqual(steps[1]["agent"], "gt-reviewer")
+        self.assertEqual(steps[1]["type"], "VERIFY")
+        self.assertEqual(steps[1]["agent"], "e2e-reviewer")
         self.assertEqual(steps[1]["maxRounds"], 3)
-        self.assertEqual(steps[1]["fixer"], "gt-fixer")
 
-        conn, tmp = self._make_conn()
+        conn, tmp = _make_conn("flow-e2e-")
         try:
             engine, repo = _make_engine(conn)
             engine.create_pipeline("e2e-scope", "e2e-builder", steps)
@@ -734,17 +731,17 @@ class TestFullPipelineFlow(unittest.TestCase):
 
             a = engine.step("e2e-scope", "PASS")  # semantic passes
             self.assertEqual(a["action"], "spawn")
-            self.assertEqual(a["agent"], "gt-reviewer")
+            self.assertEqual(a["agent"], "e2e-reviewer")
 
-            # Step 1: VERIFY_W_FIXER — reviewer passes
+            # Step 1: VERIFY — reviewer passes
             a = engine.step("e2e-scope", "PASS")
             self.assertEqual(a["action"], "done")
             state = repo.get_pipeline_state("e2e-scope")
             self.assertEqual(state["status"], "completed")
         finally:
             conn.close()
-            import shutil
             shutil.rmtree(tmp, ignore_errors=True)
+            shutil.rmtree(tmp_root, ignore_errors=True)
 
     def test_full_flow_revise_path_source_rerun_reviewer_rerun(self):
         """full flow: revise path → source re-run → reviewer re-run."""
@@ -754,7 +751,7 @@ class TestFullPipelineFlow(unittest.TestCase):
             agent_md = f.read()
         steps = parse_verification(agent_md)
 
-        conn, tmp = self._make_conn()
+        conn, tmp = _make_conn("flow-e2e-")
         try:
             engine, repo = _make_engine(conn)
             engine.create_pipeline("rev-scope", "e2e-builder", steps)
@@ -779,7 +776,6 @@ class TestFullPipelineFlow(unittest.TestCase):
             self.assertEqual(a["action"], "done")
         finally:
             conn.close()
-            import shutil
             shutil.rmtree(tmp, ignore_errors=True)
             shutil.rmtree(tmp_root, ignore_errors=True)
 
@@ -790,7 +786,7 @@ class TestFullPipelineFlow(unittest.TestCase):
             {"type": "VERIFY_W_FIXER", "agent": "e2e-reviewer", "maxRounds": 3, "fixer": "e2e-fixer"},
         ]
 
-        conn, tmp = self._make_conn()
+        conn, tmp = _make_conn("flow-e2e-")
         try:
             engine, repo = _make_engine(conn)
             engine.create_pipeline("role-scope", "e2e-builder", steps)
@@ -816,13 +812,12 @@ class TestFullPipelineFlow(unittest.TestCase):
             self.assertEqual(engine.resolve_role("role-scope", "e2e-reviewer"), "verifier")
         finally:
             conn.close()
-            import shutil
             shutil.rmtree(tmp, ignore_errors=True)
 
     def test_full_flow_parallel_scopes_dont_cross_contaminate(self):
         """full flow: parallel scopes don't cross-contaminate."""
         steps = [{"type": "VERIFY", "agent": "rev", "maxRounds": 3}]
-        conn, tmp = self._make_conn()
+        conn, tmp = _make_conn("flow-e2e-")
         try:
             engine, repo = _make_engine(conn)
             engine.create_pipeline("scope-a", "builder-a", steps)
@@ -842,7 +837,6 @@ class TestFullPipelineFlow(unittest.TestCase):
             self.assertEqual(actions[0]["scope"], "scope-a")
         finally:
             conn.close()
-            import shutil
             shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -853,14 +847,9 @@ class TestFullPipelineFlow(unittest.TestCase):
 class TestSourceVerdictDecoupling(unittest.TestCase):
     """Source REVISE/FAIL advances CHECK (source doesn't judge itself)."""
 
-    def _make_conn(self):
-        tmp = tempfile.mkdtemp(prefix="decouple-e2e-")
-        conn = _make_db(tmp)
-        return conn, tmp
-
     def test_source_revise_advances_check(self):
         """source REVISE advances CHECK (source doesn't judge itself)."""
-        conn, tmp = self._make_conn()
+        conn, tmp = _make_conn("decouple-e2e-")
         try:
             engine, repo = _make_engine(conn)
             engine.create_pipeline("decouple-scope", "rethinker", [
@@ -874,12 +863,11 @@ class TestSourceVerdictDecoupling(unittest.TestCase):
             self.assertEqual(a["agent"], "reviewer")
         finally:
             conn.close()
-            import shutil
             shutil.rmtree(tmp, ignore_errors=True)
 
     def test_source_fail_treated_as_pass_when_semantic_is_null(self):
         """source FAIL still treated as PASS when semantic is null (source doesn't self-judge)."""
-        conn, tmp = self._make_conn()
+        conn, tmp = _make_conn("decouple-e2e-")
         try:
             engine, repo = _make_engine(conn)
             engine.create_pipeline("decouple-fail", "builder", [
@@ -891,12 +879,11 @@ class TestSourceVerdictDecoupling(unittest.TestCase):
             self.assertEqual(a["action"], "done", "Should complete pipeline")
         finally:
             conn.close()
-            import shutil
             shutil.rmtree(tmp, ignore_errors=True)
 
     def test_semantic_fail_triggers_revision_even_when_source_says_pass(self):
         """semantic FAIL still triggers revision even when source says PASS."""
-        conn, tmp = self._make_conn()
+        conn, tmp = _make_conn("decouple-e2e-")
         try:
             engine, repo = _make_engine(conn)
             engine.create_pipeline("sem-override", "builder", [
@@ -909,7 +896,6 @@ class TestSourceVerdictDecoupling(unittest.TestCase):
             self.assertEqual(repo.get_pipeline_state("sem-override")["status"], "revision")
         finally:
             conn.close()
-            import shutil
             shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -920,14 +906,9 @@ class TestSourceVerdictDecoupling(unittest.TestCase):
 class TestGaterPipelineParticipant(unittest.TestCase):
     """Gater as VERIFY agent: engine.step advances (no short-circuit)."""
 
-    def _make_conn(self):
-        tmp = tempfile.mkdtemp(prefix="gater-e2e-")
-        conn = _make_db(tmp)
-        return conn, tmp
-
     def test_gater_verify_pass_completes_pipeline(self):
         """gater as VERIFY agent: engine.step advances (no short-circuit)."""
-        conn, tmp = self._make_conn()
+        conn, tmp = _make_conn("gater-e2e-")
         try:
             engine, repo = _make_engine(conn)
             engine.create_pipeline("gater-scope", "worker", [
@@ -940,12 +921,11 @@ class TestGaterPipelineParticipant(unittest.TestCase):
             self.assertEqual(repo.get_pipeline_state("gater-scope")["status"], "completed")
         finally:
             conn.close()
-            import shutil
             shutil.rmtree(tmp, ignore_errors=True)
 
     def test_gater_verify_revise_routes_back_to_source(self):
         """gater as VERIFY agent: REVISE routes back to source."""
-        conn, tmp = self._make_conn()
+        conn, tmp = _make_conn("gater-e2e-")
         try:
             engine, repo = _make_engine(conn)
             engine.create_pipeline("gater-rev", "worker", [
@@ -959,7 +939,6 @@ class TestGaterPipelineParticipant(unittest.TestCase):
             self.assertEqual(repo.get_pipeline_state("gater-rev")["status"], "revision")
         finally:
             conn.close()
-            import shutil
             shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -970,14 +949,9 @@ class TestGaterPipelineParticipant(unittest.TestCase):
 class TestDeadlockPrevention(unittest.TestCase):
     """Deadlock prevention: missing artifact / missing Result: line."""
 
-    def _make_conn(self):
-        tmp = tempfile.mkdtemp(prefix="deadlock-e2e-")
-        conn = _make_db(tmp)
-        return conn, tmp
-
     def test_missing_artifact_step_fail_transitions_instead_of_deadlock(self):
         """missing artifact: engine.step(FAIL) transitions instead of deadlock."""
-        conn, tmp = self._make_conn()
+        conn, tmp = _make_conn("deadlock-e2e-")
         try:
             engine, repo = _make_engine(conn)
             engine.create_pipeline("deadlock-scope", "architect", [
@@ -1001,12 +975,11 @@ class TestDeadlockPrevention(unittest.TestCase):
             self.assertEqual(a["agent"], "architect")
         finally:
             conn.close()
-            import shutil
             shutil.rmtree(tmp, ignore_errors=True)
 
     def test_missing_result_line_pipeline_recovers_via_fail_verdict(self):
         """missing Result line: pipeline recovers via FAIL verdict (exhausts maxRounds → failed)."""
-        conn, tmp = self._make_conn()
+        conn, tmp = _make_conn("deadlock-e2e-")
         try:
             engine, repo = _make_engine(conn)
             engine.create_pipeline("noResult-scope", "builder", [
@@ -1035,7 +1008,6 @@ class TestDeadlockPrevention(unittest.TestCase):
             self.assertEqual(repo.get_pipeline_state("noResult-scope")["status"], "failed")
         finally:
             conn.close()
-            import shutil
             shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -1107,7 +1079,6 @@ class TestEnvironmentSetup(unittest.TestCase):
             # tmp2 should have no .sessions dir
             self.assertFalse(os.path.exists(os.path.join(tmp2, ".sessions")))
         finally:
-            import shutil
             shutil.rmtree(tmp1, ignore_errors=True)
             shutil.rmtree(tmp2, ignore_errors=True)
 
