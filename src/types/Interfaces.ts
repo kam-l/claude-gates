@@ -77,6 +77,13 @@ export interface IAgentRow
   attempts: number;
 }
 
+export interface IAgentSummary
+{
+  name: string;
+  source: "project" | "global";
+  steps: VerificationStep[];
+}
+
 export interface IHookInput
 {
   session_id?: string;

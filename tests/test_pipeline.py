@@ -6,21 +6,23 @@ No Database.ts / StateMachine.ts wrapper shims.
 ts_source_tests: 137
 pytest_count: 134
 delta_rationale:
-  -3 tests dropped (TS-specific, no Python equivalent):
-    1. "getDb creates database" — Python uses conftest fixture; open_database() is
-       tested in test_session.py; no standalone createDb test needed here.
-    2. "getDb creates session dir if missing" — open_database() does NOT auto-mkdir;
-       get_session_dir() does (tested separately as test_get_session_dir_creates_dir).
-       Net +1 replacement; so this is a rename not a drop.
+  4 gross drops, 1 addition, net -3:
+    1. "getDb creates database" — dropped; Python uses conftest fixture (no standalone
+       open_database test needed here).
+    2. "getDb creates session dir if missing" — dropped; moved to test_session.py as
+       test_get_session_dir_creates_dir (open_database does NOT auto-mkdir;
+       get_session_dir does).
     3-4. "trace writes audit.jsonl entry" / "trace silently fails on bad path"
-       — Already fully covered in test_tracing.py (TestTrace class); duplicating
-       them here would be redundant. Both counted as drops.
+       — dropped; already fully covered in test_tracing.py (TestTrace class).
     5. "resolveRole: unscoped search across pipelines" — TS passes null as scope;
        Python passes empty string ""; both variants included as one combined test.
+       No drop.
     6. "Parallel scopes with same agent name" — split into 2 focused tests for
-       clarity (net 0 drop, +1 additional test for readability).
-  Net: 137 - 2 (trace, already in test_tracing.py) - 1 (getDb, no replacement)
-       + 0 (get_session_dir counted in test_session.py) = 134 pytest functions.
+       clarity (+1 additional test).
+  Net: 137 - 2 (getDb tests: 1 dropped, 1 moved to test_session.py)
+           - 2 (trace, covered in test_tracing.py)
+           + 1 (parallel split: 1 TS test → 2 Python tests)
+       = 134 pytest functions.
   All functional scenarios from the 137 TS tests are covered.
 """
 from __future__ import annotations

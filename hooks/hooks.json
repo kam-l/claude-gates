@@ -17,6 +17,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/SessionContext.js",
             "timeout": 2000
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/WebLauncher.js",
+            "timeout": 3000
           }
         ]
       }

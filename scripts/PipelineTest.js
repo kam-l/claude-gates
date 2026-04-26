@@ -1456,6 +1456,108 @@ test("setGateDisabled(false) is no-op when marker absent", () => {
     }
 });
 // ══════════════════════════════════════════════════════════════════════
+// Session banner tests
+// ══════════════════════════════════════════════════════════════════════
+const SessionContext_js_1 = require("./SessionContext.js");
+console.log("\n── SessionContext banner ──");
+test("formatStep CHECK truncates long prompts", () => {
+    const step = { type: "CHECK", prompt: "A".repeat(60), };
+    const result = (0, SessionContext_js_1.formatStep)(step);
+    assert_1.default.ok(result.includes("..."));
+    assert_1.default.ok(result.startsWith("CHECK(\""));
+});
+test("formatStep CHECK preserves short prompts", () => {
+    const step = { type: "CHECK", prompt: "Short prompt", };
+    assert_1.default.strictEqual((0, SessionContext_js_1.formatStep)(step), "CHECK(\"Short prompt\")");
+});
+test("formatStep VERIFY", () => {
+    const step = { type: "VERIFY", agent: "reviewer", maxRounds: 3, };
+    assert_1.default.strictEqual((0, SessionContext_js_1.formatStep)(step), "VERIFY(reviewer, 3)");
+});
+test("formatStep VERIFY_W_FIXER", () => {
+    const step = { type: "VERIFY_W_FIXER", agent: "reviewer", maxRounds: 3, fixer: "fixer", };
+    assert_1.default.strictEqual((0, SessionContext_js_1.formatStep)(step), "VERIFY(reviewer, 3, fixer)");
+});
+test("formatStep TRANSFORM", () => {
+    const step = { type: "TRANSFORM", agent: "cleaner", maxRounds: 1, };
+    assert_1.default.strictEqual((0, SessionContext_js_1.formatStep)(step), "TRANSFORM(cleaner)");
+});
+test("formatPipeline joins steps with arrow", () => {
+    const steps = [
+        { type: "CHECK", prompt: "Check it", },
+        { type: "VERIFY", agent: "reviewer", maxRounds: 3, },
+    ];
+    assert_1.default.strictEqual((0, SessionContext_js_1.formatPipeline)(steps), "CHECK(\"Check it\") \u2192 VERIFY(reviewer, 3)");
+});
+test("discoverGatedAgents finds agents in project dir", () => {
+    const dir = tmpDir();
+    const agentsDir = path_1.default.join(dir, ".claude", "agents");
+    fs_1.default.mkdirSync(agentsDir, { recursive: true, });
+    fs_1.default.writeFileSync(path_1.default.join(agentsDir, "test-worker.md"), "---\nname: test-worker\nverification:\n  - [\"Check output\"]\n  - [reviewer, 3]\n---\nBody", "utf-8");
+    fs_1.default.writeFileSync(path_1.default.join(agentsDir, "ungated.md"), "---\nname: ungated\n---\nNo verification", "utf-8");
+    const agents = (0, SessionContext_js_1.discoverGatedAgents)(dir, null);
+    assert_1.default.strictEqual(agents.length, 1);
+    assert_1.default.strictEqual(agents[0].name, "test-worker");
+    assert_1.default.strictEqual(agents[0].source, "project");
+    assert_1.default.strictEqual(agents[0].steps.length, 2);
+    cleanup(dir);
+});
+test("discoverGatedAgents deduplicates project over global", () => {
+    const projectDir = tmpDir();
+    const globalDir = tmpDir();
+    const projAgents = path_1.default.join(projectDir, ".claude", "agents");
+    const globAgents = path_1.default.join(globalDir, ".claude", "agents");
+    fs_1.default.mkdirSync(projAgents, { recursive: true, });
+    fs_1.default.mkdirSync(globAgents, { recursive: true, });
+    const md = "---\nname: worker\nverification:\n  - [\"Check\"]\n---\n";
+    fs_1.default.writeFileSync(path_1.default.join(projAgents, "worker.md"), md, "utf-8");
+    fs_1.default.writeFileSync(path_1.default.join(globAgents, "worker.md"), md, "utf-8");
+    fs_1.default.writeFileSync(path_1.default.join(globAgents, "global-only.md"), "---\nname: global-only\nverification:\n  - [linter!, 1]\n---\n", "utf-8");
+    const agents = (0, SessionContext_js_1.discoverGatedAgents)(projectDir, globalDir);
+    assert_1.default.strictEqual(agents.length, 2);
+    assert_1.default.strictEqual(agents[0].name, "worker");
+    assert_1.default.strictEqual(agents[0].source, "project");
+    assert_1.default.strictEqual(agents[1].name, "global-only");
+    assert_1.default.strictEqual(agents[1].source, "global");
+    cleanup(projectDir);
+    cleanup(globalDir);
+});
+test("discoverGatedAgents returns empty for missing dir", () => {
+    const agents = (0, SessionContext_js_1.discoverGatedAgents)("/nonexistent/path", null);
+    assert_1.default.strictEqual(agents.length, 0);
+});
+test("buildBanner shows Plan Gate ON when enabled", () => {
+    const origCwd = process.cwd();
+    const dir = tmpDir();
+    process.chdir(dir);
+    try {
+        const banner = (0, SessionContext_js_1.buildBanner)(false);
+        assert_1.default.ok(banner.includes("Plan Gate: ON"));
+        assert_1.default.ok(banner.includes("gate off"));
+        assert_1.default.ok(!banner.includes("PAUSED"));
+    }
+    finally {
+        process.chdir(origCwd);
+        cleanup(dir);
+    }
+});
+test("buildBanner shows PAUSED when disabled", () => {
+    const origCwd = process.cwd();
+    const dir = tmpDir();
+    process.chdir(dir);
+    try {
+        const banner = (0, SessionContext_js_1.buildBanner)(true);
+        assert_1.default.ok(banner.includes("PAUSED"));
+        assert_1.default.ok(banner.includes("Plan Gate: OFF"));
+        assert_1.default.ok(banner.includes("gate on"));
+        assert_1.default.ok(!banner.includes("gate off"));
+    }
+    finally {
+        process.chdir(origCwd);
+        cleanup(dir);
+    }
+});
+// ══════════════════════════════════════════════════════════════════════
 console.log(`\n${"=".repeat(50)}`);
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

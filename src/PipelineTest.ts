@@ -1894,6 +1894,152 @@ test("setGateDisabled(false) is no-op when marker absent", () =>
 });
 
 // ══════════════════════════════════════════════════════════════════════
+// Session banner tests
+// ══════════════════════════════════════════════════════════════════════
+
+import { buildBanner, discoverGatedAgents, formatPipeline, formatStep, } from "./SessionContext.js";
+
+console.log("\n── SessionContext banner ──",);
+
+test("formatStep CHECK truncates long prompts", () =>
+{
+  const step: VerificationStep = { type: "CHECK", prompt: "A".repeat(60,), };
+  const result = formatStep(step,);
+  assert.ok(result.includes("...",),);
+  assert.ok(result.startsWith("CHECK(\"",),);
+});
+
+test("formatStep CHECK preserves short prompts", () =>
+{
+  const step: VerificationStep = { type: "CHECK", prompt: "Short prompt", };
+  assert.strictEqual(formatStep(step,), "CHECK(\"Short prompt\")",);
+});
+
+test("formatStep VERIFY", () =>
+{
+  const step: VerificationStep = { type: "VERIFY", agent: "reviewer", maxRounds: 3, };
+  assert.strictEqual(formatStep(step,), "VERIFY(reviewer, 3)",);
+});
+
+test("formatStep VERIFY_W_FIXER", () =>
+{
+  const step: VerificationStep = { type: "VERIFY_W_FIXER", agent: "reviewer", maxRounds: 3, fixer: "fixer", };
+  assert.strictEqual(formatStep(step,), "VERIFY(reviewer, 3, fixer)",);
+});
+
+test("formatStep TRANSFORM", () =>
+{
+  const step: VerificationStep = { type: "TRANSFORM", agent: "cleaner", maxRounds: 1, };
+  assert.strictEqual(formatStep(step,), "TRANSFORM(cleaner)",);
+});
+
+test("formatPipeline joins steps with arrow", () =>
+{
+  const steps: VerificationStep[] = [
+    { type: "CHECK", prompt: "Check it", },
+    { type: "VERIFY", agent: "reviewer", maxRounds: 3, },
+  ];
+  assert.strictEqual(formatPipeline(steps,), "CHECK(\"Check it\") \u2192 VERIFY(reviewer, 3)",);
+});
+
+test("discoverGatedAgents finds agents in project dir", () =>
+{
+  const dir = tmpDir();
+  const agentsDir = path.join(dir, ".claude", "agents",);
+  fs.mkdirSync(agentsDir, { recursive: true, },);
+  fs.writeFileSync(
+    path.join(agentsDir, "test-worker.md",),
+    "---\nname: test-worker\nverification:\n  - [\"Check output\"]\n  - [reviewer, 3]\n---\nBody",
+    "utf-8",
+  );
+  fs.writeFileSync(
+    path.join(agentsDir, "ungated.md",),
+    "---\nname: ungated\n---\nNo verification",
+    "utf-8",
+  );
+
+  const agents = discoverGatedAgents(dir, null,);
+  assert.strictEqual(agents.length, 1,);
+  assert.strictEqual(agents[0].name, "test-worker",);
+  assert.strictEqual(agents[0].source, "project",);
+  assert.strictEqual(agents[0].steps.length, 2,);
+  cleanup(dir,);
+});
+
+test("discoverGatedAgents deduplicates project over global", () =>
+{
+  const projectDir = tmpDir();
+  const globalDir = tmpDir();
+  const projAgents = path.join(projectDir, ".claude", "agents",);
+  const globAgents = path.join(globalDir, ".claude", "agents",);
+  fs.mkdirSync(projAgents, { recursive: true, },);
+  fs.mkdirSync(globAgents, { recursive: true, },);
+
+  const md = "---\nname: worker\nverification:\n  - [\"Check\"]\n---\n";
+  fs.writeFileSync(path.join(projAgents, "worker.md",), md, "utf-8",);
+  fs.writeFileSync(path.join(globAgents, "worker.md",), md, "utf-8",);
+  fs.writeFileSync(
+    path.join(globAgents, "global-only.md",),
+    "---\nname: global-only\nverification:\n  - [linter!, 1]\n---\n",
+    "utf-8",
+  );
+
+  const agents = discoverGatedAgents(projectDir, globalDir,);
+  assert.strictEqual(agents.length, 2,);
+  assert.strictEqual(agents[0].name, "worker",);
+  assert.strictEqual(agents[0].source, "project",);
+  assert.strictEqual(agents[1].name, "global-only",);
+  assert.strictEqual(agents[1].source, "global",);
+  cleanup(projectDir,);
+  cleanup(globalDir,);
+});
+
+test("discoverGatedAgents returns empty for missing dir", () =>
+{
+  const agents = discoverGatedAgents("/nonexistent/path", null,);
+  assert.strictEqual(agents.length, 0,);
+});
+
+test("buildBanner shows Plan Gate ON when enabled", () =>
+{
+  const origCwd = process.cwd();
+  const dir = tmpDir();
+  process.chdir(dir,);
+  try
+  {
+    const banner = buildBanner(false,);
+    assert.ok(banner.includes("Plan Gate: ON",),);
+    assert.ok(banner.includes("gate off",),);
+    assert.ok(!banner.includes("PAUSED",),);
+  }
+  finally
+  {
+    process.chdir(origCwd,);
+    cleanup(dir,);
+  }
+});
+
+test("buildBanner shows PAUSED when disabled", () =>
+{
+  const origCwd = process.cwd();
+  const dir = tmpDir();
+  process.chdir(dir,);
+  try
+  {
+    const banner = buildBanner(true,);
+    assert.ok(banner.includes("PAUSED",),);
+    assert.ok(banner.includes("Plan Gate: OFF",),);
+    assert.ok(banner.includes("gate on",),);
+    assert.ok(!banner.includes("gate off",),);
+  }
+  finally
+  {
+    process.chdir(origCwd,);
+    cleanup(dir,);
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════
 
 console.log(`\n${"=".repeat(50,)}`,);
 console.log(`${pass} passed, ${fail} failed`,);
