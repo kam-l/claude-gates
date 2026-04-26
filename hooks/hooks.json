@@ -5,22 +5,22 @@
         "hooks": [
           {
             "type": "command",
-            "command": "diff -q \"${CLAUDE_PLUGIN_ROOT}/package.json\" \"${CLAUDE_PLUGIN_DATA}/package.json\" >/dev/null 2>&1 || (cd \"${CLAUDE_PLUGIN_DATA}\" && cp \"${CLAUDE_PLUGIN_ROOT}/package.json\" . && npm install --no-fund --no-audit) || rm -f \"${CLAUDE_PLUGIN_DATA}/package.json\"",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/py.cjs ${CLAUDE_PLUGIN_ROOT}/src/claude_gates/install_deps.py",
             "timeout": 60000
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/SessionCleanup.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/py.cjs SessionCleanup.py",
             "timeout": 5000
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/SessionContext.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/py.cjs SessionContext.py",
             "timeout": 2000
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/WebLauncher.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/py.cjs WebLauncher.py",
             "timeout": 3000
           }
         ]
@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/PipelineBlock.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/py.cjs PipelineBlock.py",
             "timeout": 5000
           }
         ]
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/PipelineConditions.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/py.cjs PipelineConditions.py",
             "timeout": 40000
           }
         ]
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/PlanGate.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/py.cjs PlanGate.py",
             "timeout": 5000
           }
         ]
@@ -63,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/PlanGateClear.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/py.cjs PlanGateClear.py",
             "timeout": 5000
           }
         ]
@@ -74,7 +74,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/PipelineInjection.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/py.cjs PipelineInjection.py",
             "timeout": 5000
           }
         ]
@@ -85,7 +85,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/GateToggle.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/py.cjs GateToggle.py",
             "timeout": 2000
           }
         ]
@@ -96,7 +96,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/PipelineVerification.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/py.cjs PipelineVerification.py",
             "timeout": 120000
           }
         ]
