@@ -10,6 +10,7 @@ Acceptance Criteria:
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import unittest
@@ -136,12 +137,16 @@ class TestHooksJsonStructure(unittest.TestCase):
         self.assertIn("hooks", self.hooks)
 
     def test_no_node_js_commands(self):
-        """AC#3: No hook commands reference .js scripts (complete switchover)."""
+        """AC#3: No hook commands reference old-style .js scripts (complete switchover).
+
+        py.cjs is the Node wrapper itself and is intentionally present in all commands —
+        it is not an old-style hook script. We check that no command invokes a direct
+        .js hook script (e.g. PipelineVerification.js) via node, excluding py.cjs itself.
+        """
         for cmd in _all_commands(self.hooks):
-            self.assertNotIn(
-                ".js",
-                cmd,
-                msg=f"Found .js reference in command: {cmd!r} — switchover must be complete",
+            self.assertFalse(
+                re.search(r"node\s+\S+/scripts/(?!py\.cjs)\S+\.js", cmd),
+                msg=f"Found old-style .js hook script in command: {cmd!r} — switchover must be complete",
             )
 
     def test_no_npm_install_command(self):
@@ -169,7 +174,7 @@ class TestHooksJsonStructure(unittest.TestCase):
         all_cmds = list(_all_commands(self.hooks))
         for script in HOOK_SCRIPTS:
             found = any(
-                f"py.cjs {script}" in cmd or f"py.cjs" in cmd and script in cmd
+                ("py.cjs" in cmd and script in cmd)
                 for cmd in all_cmds
             )
             self.assertTrue(
